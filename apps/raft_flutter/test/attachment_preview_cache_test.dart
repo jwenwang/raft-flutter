@@ -5,6 +5,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:raft_client/raft_client.dart';
+import 'package:raft_ui/raft_ui.dart';
 import 'package:raft_flutter/data/attachment_image_repository.dart';
 import 'package:raft_flutter/data/workspace_controller.dart';
 import 'package:raft_flutter/features/attachment_preview_dialog.dart';
@@ -58,11 +59,15 @@ class _Client extends RaftClient {
 
   /// When set, `/preview` fails with it.
   Object? previewFailure;
+  Map<String, dynamic>? previewResponse;
   @override
   Future<dynamic> get(String path, {Map<String, dynamic>? query}) async {
     paths.add(path);
     if (path.endsWith('/preview') && previewFailure != null) {
       throw previewFailure!;
+    }
+    if (path.endsWith('/preview') && previewResponse != null) {
+      return previewResponse;
     }
     if (path.endsWith('/url')) {
       urlRequests++;
@@ -465,6 +470,70 @@ void main() {
         await client.dispose();
       },
     );
+
+    for (final entry in <String, String>{
+      'too_large': 'This file exceeds the server preview size limit. Download the original file to view it.',
+      'unreadable': 'The file could not be read and may be damaged. Download the original file to view it.',
+      'unsupported': 'This file format is not supported for preview. Download the original file to view it.',
+      'future_reason': 'Preview unavailable. Download the original file.',
+    }.entries) {
+      testWidgets('HTTP 200 preview refusal ${entry.key} says why', (
+        tester,
+      ) async {
+        final client = _Client(storage)
+          ..previewResponse = {'status': 'unsupported', 'reason': entry.key};
+        final w = WorkspaceController(client, attachmentImageStore: cache);
+        var downloads = 0;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: AttachmentPreviewDialog(
+              controller: w,
+              metadata: const {
+                'id': 'refused',
+                'channelId': 'c1',
+                'filename': 'report.md',
+              },
+              channelId: 'c1',
+              authorized: () => true,
+              onClose: () {},
+              onDownload: () async {
+                downloads++;
+              },
+            ),
+          ),
+        );
+        await settle(
+          tester,
+          () => find.text(entry.value).evaluate().isNotEmpty,
+        );
+        expect(find.text(entry.value), findsOneWidget);
+        expect(
+          raftChinese[entry.value],
+          isNotNull,
+          reason: 'failure copy is available in Chinese',
+        );
+        final download = find.byKey(
+          const ValueKey('attachment-preview-download'),
+        );
+        expect(download, findsOneWidget);
+        await tester.tap(download);
+        expect(downloads, 1);
+        expect(
+          await cache.entryCount(),
+          0,
+          reason: 'a refusal must never be cached as a document',
+        );
+        expect(
+          storage.total,
+          0,
+          reason: 'does not silently download the original',
+        );
+        await tester.pumpWidget(const SizedBox());
+        await tester.pump(const Duration(seconds: 5));
+        w.dispose();
+        await client.dispose();
+      });
+    }
 
     testWidgets('a document preview opens from the cache and is stored', (
       tester,

@@ -282,6 +282,27 @@ class _AttachmentPreviewDialogState extends State<AttachmentPreviewDialog>
           '/attachments/${widget.metadata['id']}/preview',
         );
         if (!current || ticket != request) return;
+        // Preview refusals are successful HTTP responses, not API errors.
+        // Preserve their reason before validating the document payload.
+        if (value is Map && value['status'] == 'unsupported') {
+          final reason = value['reason'];
+          final message = switch (reason) {
+            'too_large' => 'This file exceeds the server preview size limit. Download the original file to view it.',
+            'unreadable' => 'The file could not be read and may be damaged. Download the original file to view it.',
+            'unsupported' => 'This file format is not supported for preview. Download the original file to view it.',
+            _ => 'Preview unavailable. Download the original file.',
+          };
+          // Log bounded reason codes, never arbitrary response text or URLs.
+          final code =
+              reason is String && RegExp(r'^[a-z_]{1,64}$').hasMatch(reason)
+              ? reason
+              : 'unknown';
+          logUserError(
+            FormatException('Preview status=unsupported reason=$code'),
+            where: 'attachment preview ${widget.metadata['id']}',
+          );
+          throw RaftUserError(message);
+        }
         if (value is! Map ||
             value['status'] != 'ok' ||
             value['data'] is! Map ||

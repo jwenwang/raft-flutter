@@ -200,6 +200,15 @@ class SummaryTest(unittest.TestCase):
         self.assertIn('a reference, not a gate', text)
         self.assertNotIn('deterministic check', text)
 
+    def test_window_overlap_rejects_a_short_share(self):
+        aligned = lab.window_overlap(0, 1000, 10, 1010)
+        self.assertTrue(aligned['ok'])
+        self.assertGreaterEqual(aligned['old'], 0.95)
+        self.assertGreaterEqual(aligned['new'], 0.95)
+        drifted = lab.window_overlap(0, 4210, 4020, 8230)
+        self.assertFalse(drifted['ok'])
+        self.assertLess(drifted['old'], 0.95)
+
     def test_paired_ratio_interval(self):
         same = [(10, 10)] * 12
         ci = lab.paired_ratio_ci(same, samples=200)

@@ -8,11 +8,38 @@
 // file system access (macOS sandbox safe).
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
 
+import 'package:ffi/ffi.dart';
 import 'package:flutter_driver/flutter_driver.dart' show FlutterDriver;
 import 'package:integration_test/common.dart';
 import 'package:vm_service/vm_service.dart' hide Response;
+
+final class _Timespec extends Struct {
+  @Int64()
+  external int tvSec;
+
+  @Int64()
+  external int tvNsec;
+}
+
+final _clockGettime = DynamicLibrary.open('libc.so.6').lookupFunction<
+    Int32 Function(Int32 clockId, Pointer<_Timespec> tp),
+    int Function(int clockId, Pointer<_Timespec> tp)>('clock_gettime');
+
+/// Linux CLOCK_MONOTONIC. The same timeline in every process on this host.
+int hostMonotonicNs() {
+  final tp = calloc<_Timespec>();
+  try {
+    if (_clockGettime(1, tp) != 0) {
+      throw StateError('clock_gettime(CLOCK_MONOTONIC) failed');
+    }
+    return tp.ref.tvSec * 1000000000 + tp.ref.tvNsec;
+  } finally {
+    calloc.free(tp);
+  }
+}
 
 const _encoder = JsonEncoder.withIndent(' ');
 
@@ -54,6 +81,28 @@ Future<void> main() async {
   var openWarmup = false;
   String? loadAtStart;
   String? loadAtEnd;
+  int? syncStartNs;
+  int? syncEndNs;
+
+  /// Both launches report ready, then this returns so the ack can release
+  /// them together. No sync directory means a single launch, and it does not wait.
+  Future<void> waitForPeer(int round) async {
+    final dir = Platform.environment['RAFT_LAB_SYNC_DIR'];
+    if (dir == null || dir.isEmpty || launchPair == null || launchOrder == null) return;
+    final root = Directory('$dir/$launchPair/round-$round')..createSync(recursive: true);
+    File('${root.path}/ready-$launchOrder').writeAsStringSync('$launchOrder\n', flush: true);
+    // The app stops waiting for this ack after 60 seconds and would start alone.
+    final deadline = DateTime.now().add(const Duration(seconds: 20));
+    while (true) {
+      final ready = root.listSync().whereType<File>().map((file) => file.uri.pathSegments.last).toSet();
+      if (ready.contains('ready-old') && ready.contains('ready-new')) return;
+      if (DateTime.now().isAfter(deadline)) {
+        stderr.writeln('sync barrier timed out for pair $launchPair round $round');
+        exit(2);
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+    }
+  }
 
   Future<void> handle(Map<String, dynamic> data) async {
     final kind = data['kind'] as String;
@@ -85,16 +134,25 @@ Future<void> main() async {
         if (trace) await service.clearVMTimeline();
         gcCount = 0;
         gcActive = true;
-        final opened = await _readProcThreads(service);
+        procAtEnd = null;
+        procEndWall = null;
+        syncEndNs = null;
+        // Resolve the pid before the barrier so the wait stays outside the
+        // counter window and the snapshot itself is only file reads.
+        final linuxPid = _androidDevice() ? null : (await service.getVM()).pid;
+        await waitForPeer(openRound!);
+        final opened = _androidDevice() ? await _readProcThreads(service) : _readLocalSchedstat(linuxPid);
+        syncStartNs = opened.sampleNs ?? hostMonotonicNs();
+        procStartWall = DateTime.now();
         procPid = opened.pid;
         procAtStart = opened.threads;
         procStartError = opened.error;
-        procAtEnd = null;
-        procEndWall = null;
-        procStartWall = DateTime.now();
       case 'cpu':
         // Scene clock has stopped and timeline collection has not started.
-        procAtEnd = await _readProcThreads(service);
+        // The end stamp is the counter sample, not an earlier event time.
+        final endSample = _androidDevice() ? await _readProcThreads(service) : _readLocalSchedstat(procPid);
+        syncEndNs ??= endSample.sampleNs ?? hostMonotonicNs();
+        procAtEnd = endSample;
         procEndWall = DateTime.now();
         loadAtEnd = _loadAvg();
       case 'end':
@@ -123,6 +181,9 @@ Future<void> main() async {
           if (launchOrder != null) proc['order'] = launchOrder;
           if (loadAtStart != null) proc['load'] = loadAtStart;
           if (loadAtEnd != null) proc['loadEnd'] = loadAtEnd;
+          if (syncStartNs != null) proc['syncStartNs'] = syncStartNs;
+          if (syncEndNs != null) proc['syncEndNs'] = syncEndNs;
+          if (syncStartNs != null && syncEndNs != null) proc['syncTimedBy'] = 'counter-sample';
           File('${out.path}/proc-rounds.jsonl').writeAsStringSync('${jsonEncode(proc)}\n', mode: FileMode.append);
         }
       case 'result':
@@ -406,10 +467,34 @@ const _desktopDevices = {'linux', 'macos', 'windows', 'chrome', 'edge', 'web-ser
 
 /// utime+stime for one thread, from `/proc/<pid>/task/<tid>/stat`.
 class _ProcRead {
-  const _ProcRead({this.pid, this.threads = const {}, this.error});
+  const _ProcRead({this.pid, this.threads = const {}, this.error, this.sampleNs});
   final int? pid;
   final Map<int, ({String comm, int ns})> threads;
   final String? error;
+  final int? sampleNs;
+}
+
+/// Host schedstat read. [sampleNs] is CLOCK_MONOTONIC immediately before the
+/// counter files are read, so two processes can compare the same window.
+_ProcRead _readLocalSchedstat(int? pid) {
+  if (pid == null) return _ProcRead(error: 'vm pid missing', sampleNs: hostMonotonicNs());
+  final root = Directory('/proc/$pid/task');
+  if (!root.existsSync()) return _ProcRead(pid: pid, error: '/proc/$pid/task missing', sampleNs: hostMonotonicNs());
+  final entries = root.listSync();
+  // After the directory listing, so this stamp sits on the schedstat reads.
+  final sampleNs = hostMonotonicNs();
+  final threads = <int, ({String comm, int ns})>{};
+  for (final entry in entries) {
+    final tid = int.tryParse(entry.uri.pathSegments.where((s) => s.isNotEmpty).last);
+    if (tid == null) continue;
+    final schedFile = File('${entry.path}/schedstat');
+    final commFile = File('${entry.path}/comm');
+    if (!schedFile.existsSync() || !commFile.existsSync()) continue;
+    final ns = int.tryParse(schedFile.readAsStringSync().trim().split(RegExp(r'\s+')).first);
+    if (ns == null) continue;
+    threads[tid] = (comm: commFile.readAsStringSync().trim(), ns: ns);
+  }
+  return _ProcRead(pid: pid, threads: threads, sampleNs: sampleNs);
 }
 
 bool _androidDevice() {

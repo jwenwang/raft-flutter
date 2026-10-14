@@ -216,6 +216,25 @@ def cluster_ratio_ci(batch_pairs, samples=4000, seed=1):
     }
 
 
+def window_overlap(old_start, old_end, new_start, new_end, *, minimum=0.95):
+    """How much of each window sits inside the other.
+
+    `ok` is false when the overlap is under `minimum` of either duration.
+    A pair that fails this is not one shared moment of load.
+    """
+    old_span = old_end - old_start
+    new_span = new_end - new_start
+    overlap = min(old_end, new_end) - max(old_start, new_start)
+    if overlap < 0 or old_span <= 0 or new_span <= 0:
+        return {'ok': False, 'old': 0.0, 'new': 0.0, 'overlap': max(overlap, 0)}
+    return {
+        'ok': overlap / old_span >= minimum and overlap / new_span >= minimum,
+        'old': overlap / old_span,
+        'new': overlap / new_span,
+        'overlap': overlap,
+    }
+
+
 def ratio_verdict(ci, *, high_limit=1.05, low_limit=None):
     """Whole interval within the limit passes. Entirely past it is a regression."""
     low, high = ci.get('low'), ci.get('high')
@@ -690,6 +709,11 @@ def other_instance():
 
 
 def wait_for_display(args):
+    # A simultaneous old/new pair is the measurement. The host pins each
+    # process with taskset and sets this; waiting for the other to exit
+    # would put them back in sequence.
+    if os.environ.get('RAFT_LAB_ALLOW_CONCURRENT') == '1':
+        return
     waited = 0
     while other_instance():
         if not args.wait:

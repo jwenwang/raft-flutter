@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:raft_updater/raft_updater.dart' show AppUpdater;
+
 /// How long an exit waits for the background database to close.
 const Duration cacheExitBudget = Duration(seconds: 2);
 
@@ -62,6 +64,15 @@ Future<CacheExitOutcome> _closeWithin(
       )
       .whenComplete(timer.cancel);
   return done.future;
+}
+
+/// Native `prepareExit` and the updater's required exit share this hook.
+Future<CacheExitOutcome> Function()? cachePrepareExit;
+
+/// Points both exit callers at [hook]. Null clears both.
+void bindCacheExit(Future<CacheExitOutcome> Function()? hook) {
+  AppUpdater.requiredExitHook = hook == null ? null : () => hook();
+  cachePrepareExit = hook;
 }
 
 /// Closes with [cacheExitBudget] and logs `raft.cache_exit <outcome>`.

@@ -2,12 +2,14 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:raft_flutter/platform/cache_exit.dart';
+import 'package:raft_updater/raft_updater.dart' show AppUpdater;
 
 void main() {
   final originalLog = cacheExitLog;
   tearDown(() {
     cacheExitLog = originalLog;
     resetCacheExitForTest();
+    bindCacheExit(null);
   });
 
   test('close finishes before the waiter can return exit', () async {
@@ -65,5 +67,19 @@ void main() {
     final again = await closeCacheWithin(close, const Duration(seconds: 1));
     expect(again, CacheExitOutcome.completed);
     expect(calls, 1);
+  });
+
+  test('bindCacheExit shares one hook and clears both callers', () async {
+    var calls = 0;
+    bindCacheExit(() async {
+      calls++;
+      return CacheExitOutcome.completed;
+    });
+    await AppUpdater.requiredExitHook!.call();
+    expect(await cachePrepareExit!.call(), CacheExitOutcome.completed);
+    expect(calls, 2);
+    bindCacheExit(null);
+    expect(AppUpdater.requiredExitHook, isNull);
+    expect(cachePrepareExit, isNull);
   });
 }

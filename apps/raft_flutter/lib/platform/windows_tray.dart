@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import 'cache_exit.dart';
+
 /// The runner owns the icon and persisted window preference. Dart only supplies
 /// labels/unread and consumes visibility events; message authority stays shared.
 class WindowsTray {
@@ -11,9 +13,50 @@ class WindowsTray {
           !kIsWeb &&
           (platform ?? defaultTargetPlatform) == TargetPlatform.windows,
       _channel = channel ?? nativeChannel,
-      lab = lab ?? const bool.fromEnvironment('RAFT_WINDOWS_NOTIFICATION_LAB');
+      lab = lab ?? const bool.fromEnvironment('RAFT_WINDOWS_NOTIFICATION_LAB') {
+    if (supported) _channel.setMethodCallHandler(_onCall);
+  }
 
   static const nativeChannel = MethodChannel('app.raft/windows-tray');
+
+  /// One future per request id. A repeat, including one that arrives after the
+  /// reply, joins that close and does not start another.
+  static final _prepareExits = <int, Future<String>>{};
+
+  @visibleForTesting
+  static void debugResetPrepareExit() => _prepareExits.clear();
+
+  /// Reply for native `prepareExit`: `{requestId, outcome}`.
+  static Future<Map<String, Object?>> answerPrepareExit(
+    Object? arguments,
+  ) async {
+    final args = arguments is Map ? arguments : const <Object?, Object?>{};
+    final requestId = args['requestId'];
+    final id = requestId is int ? requestId : null;
+    final outcome =
+        (id == null ? null : _prepareExits[id]) ??
+        _startPrepareExit(id, args['reason']);
+    return {'requestId': requestId, 'outcome': await outcome};
+  }
+
+  static Future<String> _startPrepareExit(int? id, Object? reason) {
+    final future = _runPrepareExit(reason);
+    if (id != null) _prepareExits[id] = future;
+    return future;
+  }
+
+  static Future<String> _runPrepareExit(Object? reason) async {
+    final hook = cachePrepareExit;
+    if (hook == null || (reason != 'explicitQuit' && reason != 'sessionEnd')) {
+      return CacheExitOutcome.absent.name;
+    }
+    try {
+      return (await hook()).name;
+    } catch (_) {
+      return CacheExitOutcome.failed.name;
+    }
+  }
+
   final bool supported, lab;
   final MethodChannel _channel;
   void Function()? onHidden;
@@ -22,9 +65,7 @@ class WindowsTray {
 
   Future<void> initialize(String Function(String) localize) async {
     if (!supported || _closed) return;
-    _channel.setMethodCallHandler((call) async {
-      if (!_closed && call.method == 'hidden') onHidden?.call();
-    });
+    _channel.setMethodCallHandler(_onCall);
     await configure(localize);
   }
 
@@ -59,6 +100,14 @@ class WindowsTray {
       WindowsTrayState.from(
         await _invoke('setCloseToTray', {'enabled': enabled}),
       );
+
+  Future<dynamic> _onCall(MethodCall call) async {
+    if (call.method == 'prepareExit') {
+      return answerPrepareExit(call.arguments);
+    }
+    if (!_closed && call.method == 'hidden') onHidden?.call();
+    return null;
+  }
 
   Future<Map<String, dynamic>?> _invoke(String method, [Object? args]) async {
     if (!supported || _closed) return null;

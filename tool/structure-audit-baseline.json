@@ -66,7 +66,7 @@
         "field.WorkspaceController._lastServerEvent": 1,
         "field.WorkspaceController._latestActivity": 1,
         "field.WorkspaceController._ledger": 1,
-        "field.WorkspaceController._localRandomIds": 1,
+        "field.WorkspaceController._localRandomIds": 0,
         "field.WorkspaceController._mainPresented": 1,
         "field.WorkspaceController._membershipRequest": 1,
         "field.WorkspaceController._membershipRevision": 1,
@@ -84,7 +84,7 @@
         "field.WorkspaceController._pendingMessageContextRetainsRows": 1,
         "field.WorkspaceController._pendingMessageContextWindow": 1,
         "field.WorkspaceController._pendingReactions": 1,
-        "field.WorkspaceController._pendingSends": 1,
+        "field.WorkspaceController._pendingSends": 0,
         "field.WorkspaceController._playerSessions": 1,
         "field.WorkspaceController._prefetched": 1,
         "field.WorkspaceController._prefetching": 1,
@@ -94,7 +94,7 @@
         "field.WorkspaceController._previewGate": 1,
         "field.WorkspaceController._previewGateAt": 1,
         "field.WorkspaceController._previewGateScope": 1,
-        "field.WorkspaceController._queuedSendTexts": 1,
+        "field.WorkspaceController._queuedSendTexts": 0,
         "field.WorkspaceController._reactionViewer": 1,
         "field.WorkspaceController._reactionWrites": 1,
         "field.WorkspaceController._readPosts": 1,
@@ -214,14 +214,14 @@
         "field._MobileNavigationSelection.source": 1,
         "field._MobilePageController.pageNavigation": 1,
         "field._MobilePageNavigation.source": 1,
-        "field._MobileWorkspaceRoute.host": 1,
-        "field._MobileWorkspaceRoute.location": 1,
-        "field._MobileWorkspaceRouteState.content": 1,
-        "field._MobileWorkspaceRouteState.controller": 1,
-        "field._PendingSend.draft": 1,
-        "field._PendingSend.randomId": 1,
-        "field._PendingSend.row": 1,
-        "field._PendingSend.uploads": 1,
+        "field._MobileWorkspaceRoute.host": 0,
+        "field._MobileWorkspaceRoute.location": 0,
+        "field._MobileWorkspaceRouteState.content": 0,
+        "field._MobileWorkspaceRouteState.controller": 0,
+        "field._PendingSend.draft": 0,
+        "field._PendingSend.randomId": 0,
+        "field._PendingSend.row": 0,
+        "field._PendingSend.uploads": 0,
         "field._ResourcePagePreview.section": 1,
         "field._ResourcePagePreviewState.client": 1,
         "field._ResourcePagePreviewState.receipt": 1,
@@ -237,8 +237,8 @@
         "field._ThreadWindow.threadChannelId": 1,
         "field._ThreadWindow.token": 1,
         "field._VisualPresentationStorage.values": 1,
-        "lines": 7132,
-        "tokens": 39888
+        "lines": 6816,
+        "tokens": 38025
       }
     },
     "workspace_view": {
@@ -625,7 +625,7 @@
         "field._RaftChatViewState.windowIndex": 1,
         "field._RaftChatViewState.windowRevision": 1,
         "lines": 3674,
-        "tokens": 20342
+        "tokens": 20317
       }
     },
     "main": {
@@ -774,12 +774,31 @@
     "workspace_composer": {
       "root": "apps/raft_flutter/lib/data/workspace_composer.dart",
       "companions": [
-        "apps/raft_flutter/lib/data/workspace_uploads.dart"
+        "apps/raft_flutter/lib/data/workspace_uploads.dart",
+        "apps/raft_flutter/lib/data/workspace_sends.dart"
       ],
       "metrics": {
+        "field.ComposerPendingSend.attempt": 1,
+        "field.ComposerPendingSend.channelId": 1,
+        "field.ComposerPendingSend.confirmed": 1,
+        "field.ComposerPendingSend.draft": 1,
+        "field.ComposerPendingSend.row": 1,
+        "field.ComposerPendingSend.uploads": 1,
         "field.ComposerSendAttempt.fingerprint": 1,
         "field.ComposerSendAttempt.inFlight": 1,
         "field.ComposerSendAttempt.randomId": 1,
+        "field.ComposerSendVisit.author": 1,
+        "field.ComposerSendVisit.channelId": 1,
+        "field.ComposerSendVisit.current": 1,
+        "field.ComposerSendVisit.displaySeq": 1,
+        "field.ComposerSendVisit.failed": 1,
+        "field.ComposerSendVisit.limit": 1,
+        "field.ComposerSendVisit.parentChannelId": 1,
+        "field.ComposerSendVisit.prepare": 1,
+        "field.ComposerSendVisit.received": 1,
+        "field.ComposerSendVisit.scope": 1,
+        "field.ComposerSendVisit.started": 1,
+        "field.ComposerSendVisit.transfer": 1,
         "field.ComposerUploadVisit.channelId": 1,
         "field.ComposerUploadVisit.limit": 1,
         "field.ComposerUploadVisit.notice": 1,
@@ -809,11 +828,23 @@
         "field.WorkspaceComposer._signals": 1,
         "field.WorkspaceComposer._text": 1,
         "field.WorkspaceComposer._write": 1,
-        "field.WorkspaceComposer.attempts": 1,
         "field.WorkspaceComposer.drafts": 1,
         "field.WorkspaceComposer.revisions": 1,
+        "field.WorkspaceComposer.sends": 1,
         "field.WorkspaceComposer.shareTokens": 1,
         "field.WorkspaceComposer.uploads": 1,
+        "field.WorkspaceSends._failed": 0,
+        "field.WorkspaceSends._localIds": 1,
+        "field.WorkspaceSends._observers": 1,
+        "field.WorkspaceSends._queued": 1,
+        "field.WorkspaceSends.attempts": 1,
+        "field.WorkspaceSends.captureScope": 1,
+        "field.WorkspaceSends.changed": 1,
+        "field.WorkspaceSends.drafts": 1,
+        "field.WorkspaceSends.pending": 1,
+        "field.WorkspaceSends.persistAttempt": 1,
+        "field.WorkspaceSends.persistDraft": 1,
+        "field.WorkspaceSends.uploads": 1,
         "field.WorkspaceUploads._closed": 1,
         "field.WorkspaceUploads._epoch": 1,
         "field.WorkspaceUploads._nextOperation": 1,
@@ -826,30 +857,14 @@
         "field.WorkspaceUploads.holds": 1,
         "field.WorkspaceUploads.nextKey": 1,
         "field._DraftMap.owner": 1,
+        "field._QueuedDraft.text": 1,
         "field._UploadOperation.cancellation": 1,
         "field._UploadOperation.id": 1,
         "field._UploadOperation.scope": 1,
-        "lines": 786,
-        "tokens": 4651
+        "lines": 1215,
+        "tokens": 7596
       }
     }
   },
-  "exceptions": [
-    {
-      "module": "chat_view",
-      "metric": "lines",
-      "limit": 3677,
-      "reason": "Scope the composer listener to one conversation; remove this allowance with the M3 send extraction (slice 3).",
-      "reviewer": "Cindy",
-      "expires": "2026-10-28"
-    },
-    {
-      "module": "chat_view",
-      "metric": "tokens",
-      "limit": 20374,
-      "reason": "Scope the composer listener to one conversation; remove this allowance with the M3 send extraction (slice 3).",
-      "reviewer": "Cindy",
-      "expires": "2026-10-28"
-    }
-  ]
+  "exceptions": []
 }

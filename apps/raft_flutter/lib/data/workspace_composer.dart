@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 
@@ -7,6 +8,9 @@ import 'package:flutter/foundation.dart';
 
 import 'shared_draft_attachment.dart';
 import 'workspace_uploads.dart';
+import 'workspace_sends.dart';
+
+export 'workspace_sends.dart' show ComposerSendAttempt;
 
 typedef ComposerRecordRead = Future<dynamic> Function(
   String kind,
@@ -24,15 +28,6 @@ typedef ComposerStoredFile = ({
   Map<String, dynamic>? metadata,
 });
 
-class ComposerSendAttempt {
-  ComposerSendAttempt(this.fingerprint, this.randomId);
-  final String fingerprint, randomId;
-
-  // Shared editors may retry a settled attempt, but must reserve a fresh id
-  // while another editor is sending it. This process-local flag is not saved.
-  bool inFlight = false;
-}
-
 /// One draft/attempt record owner for a session, borrowed by its editors.
 /// Each conversation has its own signal; typing never notifies other scopes.
 class WorkspaceComposer {
@@ -46,6 +41,14 @@ class WorkspaceComposer {
       changed: _changed,
       authority: () => (_epoch, authority?.call()),
     );
+    sends = WorkspaceSends(
+      drafts: drafts,
+      uploads: uploads,
+      captureScope: uploads.captureScope,
+      persistDraft: saveScope,
+      persistAttempt: saveAttempt,
+      changed: _changed,
+    );
   }
 
   final Object _owner;
@@ -54,7 +57,8 @@ class WorkspaceComposer {
   final ComposerRecordWrite _write;
   final _text = <String, String>{};
   final _signals = <String?, ValueNotifier<int>>{};
-  final attempts = <String, ComposerSendAttempt>{};
+  late final WorkspaceSends sends;
+  Map<String, ComposerSendAttempt> get attempts => sends.attempts;
   final shareTokens = <String, Set<String>>{};
   final revisions = <String, int>{};
   late final Map<String, String> drafts = _DraftMap(this);
@@ -95,6 +99,24 @@ class WorkspaceComposer {
     _pending = Future.wait([_pending, writing])
         .then<void>((_) {}, onError: (Object _, StackTrace _) {});
     return writing;
+  }
+
+  Future<void> saveScope(String scope, {bool requiredSuccess = false}) {
+    final pending = sends.pending[scope] ?? const <ComposerPendingSend>[];
+    final files = [
+      ...?uploads.byScope[scope],
+      for (final send in pending) ...send.uploads,
+    ].where((file) => file.local != null);
+    return saveDraft(
+      scope,
+      pendingText: pending.map((send) => send.draft),
+      queuedText: sends.queuedText(scope),
+      files: [
+        for (final file in files)
+          (local: file.local!, id: file.id, metadata: file.metadata),
+      ],
+      requiredSuccess: requiredSuccess,
+    );
   }
 
   Future<void> saveDraft(
@@ -280,8 +302,44 @@ class WorkspaceComposer {
     _changed(scope);
   }
 
+  /// Replace a local DM destination after resolution. A null hold is still
+  /// an active membership check and must move with the draft.
+  void adoptScope(String from, String to) {
+    if (_closed || from == to) return;
+    uploads.revokeScope(from, keepFiles: true);
+    sends.retireScope(from);
+    final text = drafts.remove(from), files = uploads.byScope.remove(from);
+    if (text != null && text.isNotEmpty) {
+      final held = drafts[to] ?? '';
+      drafts[to] = held.isEmpty ? text : '$held\n\n$text';
+    }
+    if (files != null) {
+      for (final file in files.where((file) => file.id == null)) {
+        file.cancel = UploadCancellation();
+        file.checking = false;
+        file.queued = file.local != null;
+        file.canRetry = true;
+        file.error = file.queued ? null : 'Upload interrupted. Tap to retry.';
+      }
+      (uploads.byScope[to] ??= []).addAll(files);
+    }
+    final tokens = shareTokens.remove(from);
+    if (tokens != null) (shareTokens[to] ??= {}).addAll(tokens);
+    if (uploads.holds.containsKey(from)) {
+      uploads.holds[to] = uploads.holds.remove(from);
+    }
+    revisions.remove(from);
+    revisions[to] = (revisions[to] ?? 0) + 1;
+    _changed(to);
+    _signals.remove(from)?.dispose();
+    unawaited(removeStoredDraft(from));
+    unawaited(saveAttempt(from, null));
+    unawaited(saveScope(to));
+  }
+
   void retireScope(String scope, {bool keepFiles = false}) {
     uploads.revokeScope(scope, keepFiles: keepFiles);
+    sends.retireScope(scope);
     _signals.remove(scope)?.dispose();
   }
 
@@ -298,7 +356,7 @@ class WorkspaceComposer {
     drafts.clear();
     uploads.clear();
     _clearSignals();
-    attempts.clear();
+    sends.clear();
     revisions.clear();
     shareTokens.clear();
   }
@@ -309,7 +367,7 @@ class WorkspaceComposer {
     _epoch++;
     _text.clear();
     uploads.dispose();
-    attempts.clear();
+    sends.dispose();
     revisions.clear();
     shareTokens.clear();
     _clearSignals();

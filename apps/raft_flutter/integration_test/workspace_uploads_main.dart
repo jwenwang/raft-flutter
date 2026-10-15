@@ -21,12 +21,20 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'perf_lab/fixtures.dart';
 import 'perf_lab/navigation_host.dart';
 
+const _sendAcceptance = bool.fromEnvironment('M3_SEND_ACCEPTANCE');
+
 /// Consumes the actual Dio multipart request. The delays keep transfer state
 /// visible to native pointer input; no controller or progress callback is driven
 /// by the fixture. The first retry.txt request returns a fixed server failure.
 class _UploadsApi extends LabAdapter {
   File? events;
   final attempts = <String, int>{};
+  final sendAttempts = <String, int>{};
+  final accepted = <String, Map<String, dynamic>>{};
+  final uploaded = <String, Map<String, dynamic>>{};
+  List<LabChannel> channels = [];
+  LabClient? replay;
+  var sequence = 1000;
 
   void record(Map<String, Object?> event) {
     events?.writeAsStringSync(
@@ -41,6 +49,11 @@ class _UploadsApi extends LabAdapter {
     Stream<Uint8List>? body,
     Future<void>? cancellation,
   ) async {
+    if (_sendAcceptance &&
+        options.method == 'POST' &&
+        options.path == '/v2/messages') {
+      return send(options);
+    }
     if (options.method != 'POST' || options.path != '/attachments/upload') {
       return super.fetch(options, body, cancellation);
     }
@@ -71,6 +84,13 @@ class _UploadsApi extends LabAdapter {
     // Earlier cancellation can already abort body reading through Dio.
     await Future<void>.delayed(const Duration(seconds: 3));
     final fail = name == 'retry.txt' && attempt == 1;
+    final attachment = {
+      'id': 'native-$name-$attempt',
+      'filename': name,
+      'mimeType': file.contentType.toString(),
+      'sizeBytes': file.length,
+    };
+    if (!fail) uploaded[attachment['id'] as String] = attachment;
     record({
       'kind': 'finish',
       'name': name,
@@ -89,17 +109,82 @@ class _UploadsApi extends LabAdapter {
                 'code': 'UPLOAD_COMPLETE_FAILED',
               }
             : {
-                'attachments': [
-                  {
-                    'id': 'native-$name-$attempt',
-                    'filename': name,
-                    'mimeType': file.contentType.toString(),
-                    'sizeBytes': file.length,
-                  },
-                ],
+                'attachments': [attachment],
               },
       ),
       fail ? 500 : 200,
+      headers: {
+        Headers.contentTypeHeader: ['application/json'],
+      },
+    );
+  }
+
+  Future<ResponseBody> send(RequestOptions options) async {
+    final data = Map<String, dynamic>.from(options.data);
+    final randomId = data['randomId'] as String;
+    final text = data['content'] as String;
+    final attempt = sendAttempts.update(
+      randomId,
+      (n) => n + 1,
+      ifAbsent: () => 1,
+    );
+    record({'kind': 'send-start', 'attempt': attempt, ...data});
+    await Future<void>.delayed(
+      Duration(milliseconds: text.startsWith('M3 slow') ? 6000 : 1200),
+    );
+    final fail = text.startsWith('M3 retry') && attempt == 1;
+    if (fail) {
+      record({'kind': 'send-finish', 'randomId': randomId, 'status': 503});
+      return ResponseBody.fromString(
+        jsonEncode({'error': 'Fixture connection lost. Please retry.'}),
+        503,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+    }
+    final row = accepted.putIfAbsent(
+      randomId,
+      () => {
+        'id': 'native-send-${++sequence}',
+        'seq': '$sequence',
+        'channelId': data['channelId'],
+        'randomId': randomId,
+        'content': text,
+        'attachments': [
+          for (final id in data['attachmentIds'] as List? ?? const [])
+            if (uploaded[id] != null) uploaded[id],
+        ],
+        'senderId': 'alice',
+        'senderType': 'user',
+        'senderName': 'Alice Zhang',
+        'messageType': 'chat',
+        'createdAt': DateTime.now().toUtc().toIso8601String(),
+      },
+    );
+    final channel = channels.firstWhere((c) => c.id == data['channelId']);
+    if (!channel.rows.any((r) => r['id'] == row['id'])) channel.rows.add(row);
+    void echo() => replay!.emit('message:new', row);
+    if (text.startsWith('M3 HTTP')) {
+      unawaited(Future<void>.delayed(const Duration(milliseconds: 400), echo));
+    } else {
+      echo();
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+    }
+    record({
+      'kind': 'send-finish',
+      'randomId': randomId,
+      'status': 200,
+      'messageId': row['id'],
+      'seq': row['seq'],
+    });
+    return ResponseBody.fromString(
+      jsonEncode({
+        'message': row,
+        'pendingMentionActions': [],
+        'deliveryWarnings': [],
+      }),
+      200,
       headers: {
         Headers.contentTypeHeader: ['application/json'],
       },
@@ -127,6 +212,8 @@ Future<void> main() async {
     adapter: uploads,
   );
   seed.dispose();
+  uploads.channels = channels;
+  uploads.replay = client;
   api.routes['GET /attachments/upload-capabilities'] = (_) => {
     'maxBytes': 10485760,
   };

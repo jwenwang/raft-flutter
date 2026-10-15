@@ -19,6 +19,7 @@ import 'reaction_toggle.dart';
 import 'workspace_cache.dart';
 import 'workspace_composer.dart';
 import 'workspace_uploads.dart';
+import 'workspace_sends.dart';
 
 export 'workspace_uploads.dart' show UploadDraft;
 import 'resource_snapshot_cache.dart';
@@ -64,32 +65,6 @@ class WorkspaceThreadIdentity {
   });
   final String parentChannelId, parentMessageId;
   final String? focusedMessageId;
-}
-
-/// Web MessageInput `addOptimisticMessage`: the row presented from the moment
-/// the user sends until the server copy (HTTP receipt or socket echo, matched
-/// by `randomId`) replaces it. A failed send removes it and gives its text and
-/// files back to the draft, as Web `removeOptimisticMessage` +
-/// `restoreFailedSendDraft` do.
-class _PendingSend {
-  _PendingSend(this.randomId, this.row, this.draft, this.uploads);
-  final String randomId, draft;
-  final Map<String, dynamic> row;
-  final List<UploadDraft> uploads;
-}
-
-/// Web `message.composer.attachmentsOnlyBody` in English.
-String _attachmentsOnlyBody(int count) =>
-    count == 1 ? '[1 attachment]' : '[$count attachments]';
-
-/// Web `mergeFailedSendIntoDraft`.
-String _mergeFailedSendIntoDraft(String failed, String current) {
-  if (current.isEmpty) return failed;
-  if (failed.isEmpty) return current;
-  final separator = failed.endsWith('\n') || current.startsWith('\n')
-      ? ''
-      : '\n';
-  return '$failed$separator$current';
 }
 
 /// Web `isThreadAbsentLookupError` (threadStore.ts): only the route's explicit
@@ -257,6 +232,8 @@ class WorkspaceController extends ChangeNotifier {
             client.generation,
             client.user?.id,
             client.serverId,
+            server?.string('role'),
+            jsonEncode(server?.json['permissions']),
           ),
         );
     if (presentationSource == null) {
@@ -288,6 +265,9 @@ class WorkspaceController extends ChangeNotifier {
     // listener. Surfaces that render entities listen to [entityDirectory]
     // (or a [WorkspaceEntitySelection] of it) directly.
     if (_ownsEntityDirectory) addListener(_entityAuthorityChanged);
+    if (presentationSource == null) {
+      this.composer.sends.attach(this, _sendChanged);
+    }
     subscription = presentationSource == null
         ? client.events.listen(_event)
         : const Stream<RaftEvent>.empty().listen((_) {});
@@ -1424,7 +1404,6 @@ class WorkspaceController extends ChangeNotifier {
     }
     if (client.serverId == id) {
       composer.clearOwnedBy(this);
-      _pendingSends.clear();
       visibleIds.clear();
       _windowState.clear();
       _diskOnlyWindows.clear();
@@ -1537,25 +1516,8 @@ class WorkspaceController extends ChangeNotifier {
     unawaited(_saveDraftScope(scope));
   }
 
-  final _queuedSendTexts = <String, String>{};
-  Map<String, Set<String>> get _draftShareTokens => composer.shareTokens;
-  Future<void> _saveDraftScope(String scope, {bool requiredSuccess = false}) {
-    final pending = _pendingSends[scope] ?? <_PendingSend>[];
-    final files = [
-      ...?_uploads[scope],
-      for (final attempt in pending) ...attempt.uploads,
-    ].where((f) => f.local != null).toList();
-    return composer.saveDraft(
-      scope,
-      pendingText: pending.map((p) => p.draft),
-      queuedText: _queuedSendTexts[scope] ?? '',
-      files: [
-        for (final file in files)
-          (local: file.local!, id: file.id, metadata: file.metadata),
-      ],
-      requiredSuccess: requiredSuccess,
-    );
-  }
+  Future<void> _saveDraftScope(String scope, {bool requiredSuccess = false}) =>
+      composer.saveScope(scope, requiredSuccess: requiredSuccess);
 
   Future<void> stageSharedDraft(
     String text,
@@ -1714,12 +1676,6 @@ class WorkspaceController extends ChangeNotifier {
   Map<String, List<UploadDraft>> get _uploads => composer.uploads.byScope;
   Map<String, ComposerSendAttempt> get _attempts => composer.attempts;
 
-  /// Optimistic rows by draft scope, in send order.
-  final Map<String, List<_PendingSend>> _pendingSends = {};
-
-  /// `randomId`s this session sent; their rows keep one presentation key
-  /// from the optimistic row through the server copy.
-  final Set<String> _localRandomIds = {};
   bool _disposed = false;
   Future<String?>? _creatingThread;
   int? _creatingThreadWindow;
@@ -1829,9 +1785,7 @@ class WorkspaceController extends ChangeNotifier {
       (presentationSource?._uploads ?? _uploads)[draftScope(thread: thread)] ??
       [];
   bool uploadsReady({bool thread = false}) =>
-      !(presentationSource?._queuedSendTexts ?? _queuedSendTexts).containsKey(
-        draftScope(thread: thread),
-      ) &&
+      !composer.sends.queued(draftScope(thread: thread)) &&
       uploads(
         thread: thread,
       ).every((u) => u.id != null || u.queued && u.error == null);
@@ -1973,27 +1927,11 @@ class WorkspaceController extends ChangeNotifier {
     if (source != null) return source.adoptResolvedDm(pendingId, real);
     if (_disposed) return;
     final wasOpen = channel?.id == pendingId;
-    final text = drafts.remove(pendingId);
-    final moved = _uploads.remove(pendingId);
-    final tokens = _draftShareTokens.remove(pendingId);
-    _draftRevisions.remove(pendingId);
-    final hold = _shareHolds.containsKey(pendingId)
-        ? _shareHolds.remove(pendingId)
-        : null;
-    if (text != null && text.isNotEmpty) {
-      final held = drafts[real.id];
-      drafts[real.id] = held == null || held.isEmpty ? text : '$held\n\n$text';
-    }
-    if (moved != null) (_uploads[real.id] ??= []).addAll(moved);
-    if (tokens != null) (_draftShareTokens[real.id] ??= {}).addAll(tokens);
-    if (hold != null) _shareHolds[real.id] = hold;
-    _draftRevisions[real.id] = (_draftRevisions[real.id] ?? 0) + 1;
+    composer.adoptScope(pendingId, real.id);
     _channelRowSeq[real.id] = ++_channelReadSeq;
     if (wasOpen) channel = real;
     _putChannelRow(real);
     notifyListeners();
-    unawaited(composer.removeStoredDraft(pendingId));
-    unawaited(_saveDraftScope(real.id));
     if (wasOpen) {
       await selectChannel(
         [
@@ -2142,9 +2080,6 @@ class WorkspaceController extends ChangeNotifier {
     if (draftScope(thread: thread) == null || _disposed) return;
     await composer.uploads.transfer(draft, _uploadVisit(thread));
   }
-
-  Future<void> _releaseSharedUploads(Iterable<UploadDraft> files) =>
-      WorkspaceUploads.release(files);
 
   void removeUpload(UploadDraft draft, {bool thread = false}) {
     final source = presentationSource;
@@ -2455,32 +2390,20 @@ class WorkspaceController extends ChangeNotifier {
             .map(_presented)
             .toList();
 
-  /// The presented timeline: [messages] or [replies] followed by this
-  /// scope's optimistic rows (Web `addOptimisticMessage` places them after
-  /// every persisted row). A row whose server copy is already presented is
-  /// dropped, whichever of HTTP or socket delivered it. Like Web ThreadPanel,
-  /// optimistic rows stay hidden while an older window is presented.
+  /// Web display order uses server sequence, with a display-only coordinate
+  /// for pending rows. Context windows keep their existing admission policy.
   List<RaftMessage> timeline({bool thread = false}) {
     final rows = thread ? replies : messages;
     final scope = draftScope(thread: thread);
-    final pending = scope == null
-        ? null
-        : (presentationSource?._pendingSends ?? _pendingSends)[scope];
-    if (pending == null ||
-        pending.isEmpty ||
+    if (scope == null ||
         !thread &&
             (hasNewer || pendingMessageContextChannelId == channel?.id)) {
       return rows;
     }
-    final confirmed = {
-      for (final row in rows)
-        if (row.json['randomId'] is String) row.json['randomId'],
-    };
-    return [
-      ...rows,
-      for (final send in pending)
-        if (!confirmed.contains(send.randomId)) _presented(send.row),
-    ];
+    return composer.sends
+        .project(rows, scope)
+        .map((row) => _presented(row.json))
+        .toList();
   }
 
   /// Stable presentation identity: a row sent from this session keeps its
@@ -2491,7 +2414,7 @@ class WorkspaceController extends ChangeNotifier {
       return presentationSource!.messageKey(message);
     }
     final randomId = message.json['randomId'];
-    return randomId is String && _localRandomIds.contains(randomId)
+    return randomId is String && composer.sends.localId(randomId)
         ? 'optimistic-$randomId'
         : message.id;
   }
@@ -2760,8 +2683,6 @@ class WorkspaceController extends ChangeNotifier {
     refreshMessageSyncFlag();
     loadSidebar();
     composer.clearOwnedBy(this);
-    _pendingSends.clear();
-    _localRandomIds.clear();
     visibleIds.clear();
     _windowState.clear();
     _windowHistoryLimited.clear();
@@ -3290,12 +3211,10 @@ class WorkspaceController extends ChangeNotifier {
       composer.retireScope(scope, keepFiles: keepShared && scope == id);
       if (keepShared && scope == id) continue;
       _attempts.remove(scope);
-      _pendingSends.remove(scope);
     }
     for (final messageId in messageIds) {
       final scope = 'thread:$messageId';
       _attempts.remove(scope);
-      _pendingSends.remove(scope);
       composer.retireScope(scope);
       reactionViewer.remove(messageId);
       for (final bucket in _summariesByChannel.values) {
@@ -4889,27 +4808,14 @@ class WorkspaceController extends ChangeNotifier {
     // Shared content whose destination is not confirmed yet is never sent.
     if (sharedBlocked(thread: thread)) return false;
     error = null;
-    final generation = ledger.generation;
-    final principal = client.user?.id, serverId = client.serverId;
-    final origin = client.origin, clientGeneration = client.generation;
     final intendedScope = draftScope(thread: thread);
-    final intendedChannel = channel?.id, intendedParent = threadParentMessageId;
-    final role = server?.string('role');
+    if (intendedScope == null) return false;
+    final scope = intendedScope, intendedChannel = channel?.id;
+    final intendedParent = threadParentMessageId, role = server?.string('role');
     var window = thread ? threadGeneration : channelGeneration;
-    final selectedAttachments = attachments == null
-        ? null
-        : List<String>.unmodifiable(attachments);
-    bool sameAccount() =>
+    bool current() =>
         !_disposed &&
-        generation == ledger.generation &&
-        principal == client.user?.id &&
-        serverId == client.serverId &&
-        origin == client.origin &&
-        clientGeneration == client.generation &&
-        !_revokedChannels.contains(intendedChannel);
-    bool currentSend() =>
-        sameAccount() &&
-        intendedScope == draftScope(thread: thread) &&
+        scope == draftScope(thread: thread) &&
         intendedChannel == channel?.id &&
         (!thread || intendedParent == threadParentMessageId) &&
         window == (thread ? threadGeneration : channelGeneration) &&
@@ -4923,236 +4829,95 @@ class WorkspaceController extends ChangeNotifier {
           'name': mention['name'],
         }),
     ];
-    if (intendedScope == null) return false;
-    final scope = intendedScope;
-    final uploaded = List<UploadDraft>.of(uploads(thread: thread));
-    if (uploaded.any((u) => u.queued)) {
-      if (_queuedSendTexts.containsKey(scope)) return false;
-      _queuedSendTexts[scope] = text;
-      unawaited(_saveDraftScope(scope));
-      try {
-        final limit = await uploadLimitBytes();
-        if (!currentSend()) return false;
-        if (limit == null ||
-            uploaded.any((u) => u.local != null && u.sizeBytes > limit)) {
-          error = limit == null
-              ? 'The upload size limit could not be checked. Try again in a moment.'
-              : 'A shared file exceeds the upload size limit.';
-          notifyListeners();
-          return false;
-        }
-        for (final upload in uploaded.where((u) => u.queued)) {
-          if (!currentSend()) return false;
-          await _transferUpload(upload, thread: thread);
-          if (!currentSend() || upload.id == null) return false;
-        }
-      } finally {
-        _queuedSendTexts.remove(scope);
-      }
-    }
-    if (uploaded.any((u) => u.id == null)) {
-      error =
-          '${const RaftApiException('Wait for uploads to finish, or remove the failed file.')}';
-      notifyListeners();
-      return false;
-    }
-    final ids = selectedAttachments ?? uploaded.map((u) => u.id!).toList();
-    // The server rejects an empty `content` even with `attachmentIds`; Web
-    // MessageInput sends `message.composer.attachmentsOnlyBody` ("[1
-    // attachment]") for a message that has files and no text. The draft keeps
-    // the typed text, so a failed send restores an empty draft, not the body.
-    final body = text.trim().isEmpty && ids.isNotEmpty
-        ? (attachmentsOnlyBody ?? _attachmentsOnlyBody)(ids.length)
-        : text;
-    final fingerprint = jsonEncode([
+    return composer.sends.send(
       text,
-      ids,
-      if (selectedMentions.isNotEmpty) selectedMentions,
-      if (asTask) true,
-    ]);
-    // A failed send keeps its randomId so retrying the same draft cannot
-    // duplicate a message the server did accept. A second send of the same
-    // text while the first is still in flight is a new message.
-    final retained = _attempts[scope];
-    final freshAttempt =
-        retained == null ||
-        retained.fingerprint != fingerprint ||
-        retained.inFlight;
-    final attempt = freshAttempt
-        ? ComposerSendAttempt(fingerprint, randomId ?? client.newRandomId())
-        : retained;
-    _attempts[scope] = attempt;
-    attempt.inFlight = true;
-    final sentId = attempt.randomId;
-    // Web MessageInput: the optimistic row appears and the composer's files
-    // leave with it before any request; a failure gives both back.
-    final user = client.user;
-    final selectedUploads = [
-      for (final upload in uploaded)
-        if (ids.contains(upload.id)) upload,
-    ];
-    final pending = _PendingSend(
-      sentId,
-      {
-        'id': 'optimistic-$sentId',
-        'randomId': sentId,
-        'channelId': thread ? threadChannelId : intendedChannel,
-        'senderId': user?.id ?? '',
-        'senderType': 'user',
-        // Web MessageInput: displayName || name (an empty displayName is
-        // missing).
-        'senderName': user?.firstNonEmpty(const ['displayName', 'name']) ?? '',
-        'messageType': 'chat',
-        'content': body,
-        if (selectedMentions.isNotEmpty) 'mentions': selectedMentions,
-        'createdAt': DateTime.now().toUtc().toIso8601String(),
-        if (selectedUploads.isNotEmpty)
-          'attachments': [
-            for (final upload in selectedUploads)
-              upload.metadata ??
-                  {
-                    'id': upload.id,
-                    'filename': upload.filename,
-                    'sizeBytes': upload.sizeBytes,
-                  },
-          ],
-        'pendingSend': true,
-      },
-      text,
-      selectedUploads,
-    );
-    (_pendingSends[scope] ??= []).add(pending);
-    _localRandomIds.add(sentId);
-    // Web MessageInput clears its banner and the previous send's delivery
-    // warnings once a send is accepted, so a notice about the old draft (a
-    // blocked send, a skipped file) cannot outlive it.
-    (presentationSource?._composerNotices ?? _composerNotices).clear(scope);
-    (presentationSource?.sendWarnings ?? sendWarnings).remove(scope);
-    if (selectedUploads.isNotEmpty) {
-      _uploads[scope]?.removeWhere(selectedUploads.contains);
-      if (_uploads[scope]?.isEmpty ?? false) _uploads.remove(scope);
-    }
-    notifyListeners();
-
-    void settle() {
-      attempt.inFlight = false;
-      final list = _pendingSends[scope];
-      list?.remove(pending);
-      if (list != null && list.isEmpty) _pendingSends.remove(scope);
-    }
-
-    bool delivered(String? id) =>
-        id != null &&
-        ledger.messages(id).any((row) => row['randomId'] == sentId);
-
-    // Web `restoreFailedSendDraft`: restore into the scope that owned the
-    // send, never into whichever conversation is current now.
-    bool fail([Object? cause]) {
-      settle();
-      if (sameAccount()) {
-        final restored = _mergeFailedSendIntoDraft(
-          pending.draft,
-          drafts[scope] ?? '',
-        );
-        drafts[scope] = restored;
-        if (pending.uploads.isNotEmpty) {
-          _uploads[scope] = [...pending.uploads, ...?_uploads[scope]];
-        }
-        unawaited(_saveDraftScope(scope));
-        if (cause != null && currentSend()) {
+      client: client,
+      attachments: attachments,
+      mentions: selectedMentions,
+      randomId: randomId,
+      asTask: asTask,
+      attachmentsOnlyBody:
+          attachmentsOnlyBody ??
+          (count) => count == 1 ? '[1 attachment]' : '[$count attachments]',
+      visit: ComposerSendVisit(
+        scope: scope,
+        channelId: thread ? threadChannelId : intendedChannel,
+        parentChannelId: intendedChannel,
+        displaySeq: ledger.watermark,
+        author: {
+          'senderId': client.user?.id ?? '',
+          'senderType': 'user',
+          'senderName':
+              client.user?.firstNonEmpty(const ['displayName', 'name']) ?? '',
+        },
+        current: current,
+        prepare: () async {
+          if (!thread && hasNewer && channel != null) {
+            final refreshing = selectChannel(channel!);
+            window = channelGeneration;
+            await refreshing;
+            if (!current()) return null;
+            onWindowRefreshed?.call(window);
+          }
+          if (!current()) return null;
+          return thread ? await ensureThread() : intendedChannel;
+        },
+        limit: uploadLimitBytes,
+        transfer: (file) => _transferUpload(file, thread: thread),
+        started: () {
+          _composerNotices.clear(scope);
+          sendWarnings.remove(scope);
+        },
+        failed: (cause) {
           error = userErrorText(
             cause,
             fallback: 'Failed to send message',
             where: 'send message',
           );
-        }
-      }
-      notifyListeners();
-      return false;
-    }
+          notifyListeners();
+        },
+        received: (sent) {
+          pendingMentionActions[scope] = normalizePendingMentionActions(
+            sent.receipt['pendingMentionActions'],
+          );
+          sendWarnings[scope] = (
+            unresolved: [
+              for (final handle
+                  in (sent.receipt['unresolvedMentionHandles'] as List? ??
+                      const []))
+                if (handle is String) handle,
+            ],
+            agentStopped:
+                (sent.receipt['deliveryWarnings'] as List? ?? const []).any(
+                  (w) =>
+                      w is Map &&
+                      w['targetType'] == 'agent' &&
+                      w['reason'] == 'agent_stopped' &&
+                      w['targetId'] is String &&
+                      (w['targetId'] as String).isNotEmpty,
+                ),
+          );
+        },
+      ),
+    );
+  }
 
-    try {
-      if (!thread && hasNewer && channel != null) {
-        final refreshing = selectChannel(channel!);
-        // selectChannel starts synchronously. Only this intentional refresh may
-        // advance the window; navigation during its awaits must cancel send.
-        window = channelGeneration;
-        await refreshing;
-        if (!currentSend()) return fail();
-        onWindowRefreshed?.call(window);
+  /// Project session delivery into each existing accepted window. This does
+  /// not create another ledger or move a page's current selection.
+  void _sendChanged(String scope, RaftMessage? accepted) {
+    if (_disposed) return;
+    final selected = scope == draftScope() || scope == draftScope(thread: true);
+    if (accepted != null && !_revokedChannels.contains(accepted.channelId)) {
+      final id = accepted.channelId;
+      if (id == channel?.id && !hasNewer ||
+          id == threadChannelId ||
+          _retainsLiveTail(id)) {
+        ledger.ingest([accepted.json], expectedGeneration: ledger.generation);
+        visibleIds.putIfAbsent(id, () => {}).add(accepted.id);
+        unawaited(_saveWindow(id, thread: id == threadChannelId));
       }
-      if (!currentSend()) return fail();
-      final id = thread ? await ensureThread() : intendedChannel;
-      if (id == null || !currentSend()) return fail();
-      if (freshAttempt) {
-        await composer.saveAttempt(scope, attempt, channelId: channel?.id);
-      }
-      if (!currentSend()) return fail();
-      final sent = await client.sendWithReceipt(
-        id,
-        body,
-        attachments: ids,
-        mentions: selectedMentions.isEmpty ? null : selectedMentions,
-        randomId: sentId,
-        asTask: asTask,
-      );
-      final message = sent.message;
-      settle();
-      if (sameAccount() && pending.uploads.any((file) => file.local != null)) {
-        await _saveDraftScope(scope);
-        await _releaseSharedUploads(pending.uploads);
-      }
-      if (_attempts[scope]?.randomId == sentId) {
-        _attempts.remove(scope);
-        composer.saveAttempt(scope, null);
-      }
-      if (!currentSend()) {
-        notifyListeners();
-        return true;
-      }
-      // Web MessageInput replaces the strip with each send's receipt.
-      pendingMentionActions[scope] = normalizePendingMentionActions(
-        sent.receipt['pendingMentionActions'],
-      );
-      sendWarnings[scope] = (
-        unresolved: [
-          for (final handle
-              in (sent.receipt['unresolvedMentionHandles'] as List? ??
-                  const []))
-            if (handle is String) handle,
-        ],
-        // Web `normalizeDeliveryWarnings`: agent targets stopped only.
-        agentStopped: (sent.receipt['deliveryWarnings'] as List? ?? const [])
-            .any(
-              (w) =>
-                  w is Map &&
-                  w['targetType'] == 'agent' &&
-                  w['reason'] == 'agent_stopped' &&
-                  w['targetId'] is String &&
-                  (w['targetId'] as String).isNotEmpty,
-            ),
-      );
-      ledger.ingest([
-        {...message.json, 'randomId': message.json['randomId'] ?? sentId},
-      ], expectedGeneration: generation);
-      visibleIds.putIfAbsent(id, () => {}).add(message.id);
-      _saveWindow(id, thread: thread);
-      notifyListeners();
-      return true;
-    } catch (e) {
-      // The socket echo already presented the accepted copy.
-      if (sameAccount() &&
-          delivered(thread ? threadChannelId : intendedChannel)) {
-        settle();
-        if (pending.uploads.any((file) => file.local != null)) {
-          await _saveDraftScope(scope);
-          await _releaseSharedUploads(pending.uploads);
-        }
-        notifyListeners();
-        return true;
-      }
-      return fail(e);
     }
+    if (selected) notifyListeners();
   }
 
   Future<String?> ensureThread() async {
@@ -6510,6 +6275,7 @@ class WorkspaceController extends ChangeNotifier {
         event.payload is Map) {
       final row = Map<String, dynamic>.from(event.payload);
       if (_revokedChannels.contains(row['channelId'])) return;
+      composer.sends.confirm(row);
       final duplicate =
           row['channelId'] is String &&
           row['id'] is String &&
@@ -6616,6 +6382,7 @@ class WorkspaceController extends ChangeNotifier {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    composer.sends.detach(this);
     composer.disposeOwnedBy(this);
     if (_ownsEntityDirectory) {
       removeListener(_entityAuthorityChanged);

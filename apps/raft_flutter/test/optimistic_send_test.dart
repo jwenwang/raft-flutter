@@ -298,6 +298,43 @@ void main() {
   );
 
   testWidgets(
+    'failure preserves the newer IME composition and restores the failed text once',
+    (t) async {
+      final (w, api, _) = (await t.runAsync(_fixture))!;
+      addTearDown(w.dispose);
+      final ack = Completer<(int, dynamic)>();
+      api.routes['POST /v2/messages'] = (_) => ack.future;
+      await _mount(t, w);
+      await t.enterText(_editor(), 'Failed draft');
+      await t.pump();
+      await _tapSend(t);
+      await t.pump();
+      await t.tap(_editor());
+      const composing = TextEditingValue(
+        text: 'ni',
+        selection: TextSelection.collapsed(offset: 2),
+        composing: TextRange(start: 0, end: 2),
+      );
+      t.testTextInput.updateEditingValue(composing);
+      await t.pump();
+      ack.complete((503, {'error': 'Fixture offline'}));
+      await _frames(t, () => w.error != null);
+      final controller = t.widget<TextField>(_editor()).controller!;
+      expect(controller.value, composing);
+      t.testTextInput.updateEditingValue(const TextEditingValue(
+        text: '你', selection: TextSelection.collapsed(offset: 1),
+      ));
+      await t.pump();
+      await t.pump();
+      expect(controller.text, 'Failed draft\n你');
+      expect(w.drafts['c1'], 'Failed draft\n你');
+      expect(t.takeException(), isNull);
+      await t.pumpWidget(const SizedBox());
+      await t.pump(const Duration(seconds: 1));
+    },
+  );
+
+  testWidgets(
     'an uploaded attachment sends with the row and keeps its card on confirmation',
     (t) async {
       final (w, api, _) = (await t.runAsync(_fixture))!;

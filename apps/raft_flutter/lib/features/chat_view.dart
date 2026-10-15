@@ -3418,19 +3418,18 @@ class _RaftChatViewState extends State<RaftChatView>
     final bottomCount = historyWindow
         ? (w.unread[w.channel?.id] ?? 0)
         : newMessageCount;
-    final composeScope = w.draftScope(thread: widget.thread),
+    final thread = widget.thread;
+    final composeScope = w.draftScope(thread: thread),
         composeAuthority = workspaceAuthority(w);
-    var composeWindow = widget.thread
+    var composeWindow = thread
         ? w.threadGeneration
         : w.channelGeneration;
     bool currentComposer() =>
         mounted &&
-        composeScope == w.draftScope(thread: widget.thread) &&
+        composeScope == w.draftScope(thread: thread) &&
         composeAuthority == workspaceAuthority(w) &&
         composeWindow ==
-            (widget.thread ? w.threadGeneration : w.channelGeneration);
-    // Web `message.composer.attachmentsOnlyBody`, resolved while the context
-    // is live: the controller picks the form once it knows the file count.
+            (thread ? w.threadGeneration : w.channelGeneration);
     final onlyOne = raftFormat(context, '[{count} attachment]', {'count': 1});
     final manyBody = raftText(context, '[{count} attachments]');
     String attachmentsOnlyBody(int count) =>
@@ -3441,17 +3440,17 @@ class _RaftChatViewState extends State<RaftChatView>
       bool forceTask = false,
     }) async {
       if (!presentationActive || !currentComposer()) return false;
-      final submittedTask = !widget.thread && (alsoCreateTask || forceTask);
+      final submittedTask = !thread && (alsoCreateTask || forceTask);
       final submittedTaskRevision = taskChoiceRevision;
       final accepted = await w.send(
         text,
-        thread: widget.thread,
+        thread: thread,
         mentions: mentions,
         asTask: submittedTask,
         attachmentsOnlyBody: attachmentsOnlyBody,
         onWindowRefreshed: (window) {
           if (mounted &&
-              composeScope == w.draftScope(thread: widget.thread) &&
+              composeScope == w.draftScope(thread: thread) &&
               composeAuthority == workspaceAuthority(w)) {
             composeWindow = window;
           }
@@ -3464,12 +3463,10 @@ class _RaftChatViewState extends State<RaftChatView>
           alsoCreateTask) {
         setState(() => alsoCreateTask = false);
       }
-      // The composer handed this text off on submit; only a rejected send
-      // gives it back, even if the conversation changed meanwhile.
       return accepted;
     }
 
-    if (!widget.thread && w.channel == null) {
+    if (!thread && w.channel == null) {
       return RaftEmptyState(
         title: raftText(context, 'Welcome to Raft'),
         detail: raftText(
@@ -3478,7 +3475,7 @@ class _RaftChatViewState extends State<RaftChatView>
         ),
       );
     }
-    final (channelFooter, channelGraceBanner) = widget.thread
+    final (channelFooter, channelGraceBanner) = thread
         ? (threadFooterWidget(), null)
         : channelFooterWidgets();
     // Rows read breakpoint bands, not the raw window width, so a resize
@@ -3488,7 +3485,7 @@ class _RaftChatViewState extends State<RaftChatView>
       child: Column(
         children: [
           RaftToastPortal(controller: selectionToast),
-          if (widget.thread && search != null && search.isOpen)
+          if (thread && search != null && search.isOpen)
             RaftThreadSearchBar(
               controller: searchInput,
               focusNode: searchFocus,
@@ -3512,7 +3509,7 @@ class _RaftChatViewState extends State<RaftChatView>
                         ? raftFormat(
                             context,
                             // ThreadPanel.tsx:2619 uses its own shorter copy.
-                            widget.thread
+                            thread
                                 ? '{count} new'
                                 : '{count} new messages',
                             {'count': bottomCount},
@@ -3536,12 +3533,12 @@ class _RaftChatViewState extends State<RaftChatView>
             channelFooter
           else
             ValueListenableBuilder<int>(
-              valueListenable: w.draftChanges(thread: widget.thread),
+              valueListenable: w.draftChanges(thread: thread),
               builder: (context, revision, _) => RaftComposer(
                 // Web MessageInput drag-and-drop, paste and keyboard images.
                 frame: (_, composer, enabled) => ComposerFileDropTarget(
                   controller: w,
-                  thread: widget.thread,
+                  thread: thread,
                   active: () =>
                       enabled && presentationActive && currentComposer(),
                   child: composer,
@@ -3549,20 +3546,20 @@ class _RaftChatViewState extends State<RaftChatView>
                 onPasteAttachments: () => pasteComposerAttachments(
                   context,
                   w,
-                  thread: widget.thread,
+                  thread: thread,
                   active: () => presentationActive && currentComposer(),
                 ),
                 onContentInserted: (content) => insertComposerContent(
                   context,
                   w,
                   content,
-                  thread: widget.thread,
+                  thread: thread,
                   active: () => presentationActive && currentComposer(),
                 ),
                 clearOnSubmit: true,
                 accessoryRow: composerAccessory(),
                 autofocus:
-                    widget.thread &&
+                    thread &&
                     RaftDensityScope.of(context) == RaftDensity.desktop,
                 canAutofocus: () =>
                     presentationActive &&
@@ -3570,15 +3567,15 @@ class _RaftChatViewState extends State<RaftChatView>
                     w.client.user != null &&
                     w.can('viewChannel', resource: w.channel),
                 handle: composerHandle,
-                initialDraft: w.drafts[w.draftScope(thread: widget.thread)] ?? '',
-                draftRevision: w.draftRevision(thread: widget.thread),
+                initialDraft: w.drafts[w.draftScope(thread: thread)] ?? '',
+                draftRevision: w.draftRevision(thread: thread),
                 onDraftChanged: (text) {
-                  if (currentComposer()) w.saveDraft(text, thread: widget.thread);
+                  if (currentComposer()) w.saveDraft(text, thread: thread);
                 },
                 key: ValueKey(
-                  'compose-${widget.thread ? w.threadParentMessageId : w.channel?.id}',
+                  'compose-${thread ? w.threadParentMessageId : w.channel?.id}',
                 ),
-                taskAction: !widget.thread && w.channel?.type != 'thread'
+                taskAction: !thread && w.channel?.type != 'thread'
                     ? RaftComposerTaskToggle(
                         key: const Key('composer-as-task'),
                         checked: alsoCreateTask,
@@ -3603,15 +3600,15 @@ class _RaftChatViewState extends State<RaftChatView>
                     attach(mediaOnly: true);
                   }
                 },
-                hasAttachments: w.uploads(thread: widget.thread).isNotEmpty,
+                hasAttachments: w.uploads(thread: thread).isNotEmpty,
                 attachments: composerAttachmentsFor(
                   context,
                   w,
-                  thread: widget.thread,
+                  thread: thread,
                   onPreview: previewDraftImage,
                 ),
                 submitSpinner: w
-                    .uploads(thread: widget.thread)
+                    .uploads(thread: thread)
                     .any(
                       (d) =>
                           d.checking ||
@@ -3623,16 +3620,16 @@ class _RaftChatViewState extends State<RaftChatView>
                     ? raftText(context, 'Channel conversion in progress')
                     : composerSendBlockTitle(
                         context,
-                        w.uploads(thread: widget.thread),
+                        w.uploads(thread: thread),
                       ),
                 onSendBlocked: w.conversationPaused
                     ? null
                     : () => raiseComposerSendBlockNotice(
                         context,
                         w,
-                        thread: widget.thread,
+                        thread: thread,
                       ),
-                hint: widget.thread
+                hint: thread
                     ? raftText(context, 'Message thread')
                     : w.channel?.type == 'dm'
                     // Web ChatPanel: a DM composer reads `Message @<peer>`.
@@ -3647,22 +3644,22 @@ class _RaftChatViewState extends State<RaftChatView>
                       }),
                 enabled:
                     presentationActive &&
-                    (widget.thread
+                    (thread
                         ? w.threadParentMessageId != null &&
                               w.threadSourceChannel?.archived != true &&
                               w.threadSourceChannel?.joined == true
                         : w.channel?.archived != true),
                 canSend:
                     !w.conversationPaused &&
-                    !w.sharedBlocked(thread: widget.thread) &&
-                    w.uploadsReady(thread: widget.thread),
+                    !w.sharedBlocked(thread: thread) &&
+                    w.uploadsReady(thread: thread),
                 suggestions: composerDirectory.suggestions,
                 onSuggestionsRequested: (prefix) {
                   if (presentationActive && currentComposer()) {
                     composerDirectory.request(prefix);
                   }
                 },
-                onForceTaskSendWithMentions: !widget.thread
+                onForceTaskSendWithMentions: !thread
                     ? (text, mentions) =>
                           sendCurrent(text, mentions, forceTask: true)
                     : null,

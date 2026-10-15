@@ -379,6 +379,7 @@ class DriftWorkspaceCache extends GeneratedDatabase
     String principal,
     String server,
   ) async {
+    messageHistory.receiver.clearServer(origin, principal, server);
     await customStatement(
       'DELETE FROM workspace_cache WHERE origin=? AND principal=? AND server=?',
       [origin, principal, server],

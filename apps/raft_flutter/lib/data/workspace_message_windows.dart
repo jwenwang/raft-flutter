@@ -65,10 +65,12 @@ class WorkspaceMessageWindows {
     Iterable<Map<String, dynamic>> rows, {
     Iterable<String>? visible,
     bool replace = false,
+    bool authoritative = false,
   }) {
     if (!_writable(request)) return;
     final accepted = rows.toList();
-    ledger.ingest(accepted, expectedGeneration: ledger.generation);
+    ledger.ingest(accepted, expectedGeneration: ledger.generation,
+      complete: authoritative);
     reveal(
       request,
       id,

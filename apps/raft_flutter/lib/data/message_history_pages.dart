@@ -1,10 +1,12 @@
 import 'package:raft_client/raft_client.dart';
+import 'package:raft_sync/raft_sync.dart' show mergeMessageProjection;
 
 import 'message_history.dart';
 import 'history_capacity.dart';
 import 'history_read_policy.dart';
 import 'message_history_verification.dart';
 import 'message_history_memory.dart';
+import 'history_snapshot_writes.dart';
 import 'message_window_snapshot.dart';
 import 'workspace_cache.dart';
 import 'workspace_controller.dart';
@@ -25,12 +27,15 @@ class MessageHistoryPages {
     target: local['targetMessageId'] as String?,
     verifiedAt: local is MessageHistoryPage ? local.verifiedAt : null,
   );
-  static String saveError(Object cause) => cause is HistoryCapacityExceeded
+  static String saveError(Object cause) => cause is HistoryReadRetired
+      ? 'Local history changed while loading. Try again.'
+      : cause is HistoryCapacityExceeded
       ? 'Device message storage is full. Increase the message history limit or stop keeping a conversation in Storage settings.'
       : 'Local changes could not be saved on this device.';
   static void attach(WorkspaceController w) {
     final device = storage(w.cache);
     if (device == null || w.presentationSource != null) return;
+    HistorySnapshotWrites.attach(w);
     MessageHistoryMemory.attach(w, device);
     device.capacity.protect(w, () sync* {
       final user = w.client.user?.id, server = w.client.serverId;
@@ -51,7 +56,9 @@ class MessageHistoryPages {
   }
 
   static void detach(WorkspaceController w) {
+    HistorySnapshotWrites.cancel(w);
     final device = storage(w.cache);
+    device?.receiver.cancelUpdates(w);
     device?.reads.forget(w);
     device?.capacity.release(w);
     device?.memory.unregister(w);
@@ -191,9 +198,10 @@ class MessageHistoryPages {
       for (final row in merged['messages'] as List) {
         final key = row['id'] as String;
         ids.add(key);
+        final pending = device.receiver.pendingUpdate(page.scope, key);
         if (identical(initial[key], current[key]) &&
-            !device.receiver.hasRow(page.scope, key)) {
-          accepted.add(Map<String, dynamic>.from(row as Map));
+            (!device.receiver.hasRow(page.scope, key) || pending != null)) {
+          accepted.add(pending == null ? Map<String, dynamic>.from(row as Map) : mergeMessageProjection(Map<String, dynamic>.from(row as Map), pending));
         }
       }
       for (final row in page['messages'] as List) {
@@ -205,7 +213,8 @@ class MessageHistoryPages {
           w.visibleIds[id]?.remove(key);
         }
       }
-      w.messageWindows.acceptRows(request, id, accepted);
+      w.messageWindows.acceptRows(request, id, accepted, authoritative: true);
+      w.messageSync.replaceBodies(id, accepted);
       if (!page.local &&
           !page.focused &&
           page.before == null &&
@@ -224,6 +233,19 @@ class MessageHistoryPages {
       return true;
     } catch (cause) {
       if (request.current && w.cacheWritable) {
+        if (cause is HistoryReadRetired) {
+          // The receiver can have admitted this page before its write fence.
+          // Remove only the unchanged page projections; later live edits own
+          // their bodies and must survive this retired response.
+          for (final row in page['messages'] as List) {
+            final key = row['id'] as String;
+            if (identical(initial[key], w.ledger.message(id, key)) &&
+                !device.receiver.hasRow(page.scope, key)) {
+              w.ledger.remove(id, key);
+              w.visibleIds[id]?.remove(key);
+            }
+          }
+        }
         w.error ??= saveError(cause);
       }
       return false;
@@ -263,6 +285,7 @@ class MessageHistoryPages {
     String? target,
     Object? ticket,
     HistoryReadReason? reason,
+    int retiredAttempts = 0,
   }) async {
     final device = storage(cache);
     if (device == null || scope == null) return remote();
@@ -367,6 +390,12 @@ class MessageHistoryPages {
         after: after,
         focused: focused,
       );
+    } on HistoryReadRetired {
+      if (retiredAttempts >= 2 || !current()) rethrow;
+      return load(cache: cache, scope: scope, current: current, held: held,
+        remote: remote, before: before, after: after, limit: limit,
+        localFirst: false, focused: focused, target: target, ticket: ticket,
+        reason: HistoryReadReason.evicted, retiredAttempts: retiredAttempts + 1);
     } catch (_) {
       merged = raw;
     }

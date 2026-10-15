@@ -1,4 +1,5 @@
 import 'package:raft_client/raft_client.dart';
+import 'package:raft_sync/raft_sync.dart' show mergeMessageProjection;
 
 import 'history_read_policy.dart';
 import 'message_history.dart';
@@ -242,7 +243,8 @@ class MessageHistoryVerification {
       final limited = page['historyLimited'] == true;
       final allowed = {for (final row in raw) row['id'] as String};
       for (final id in ids) {
-        if (db.receiver.hasRow(scope, id) ||
+        final pending = db.receiver.pendingUpdate(scope, id);
+        if (db.receiver.hasRow(scope, id) && pending == null ||
             !identical(initial[id], w.ledger.message(scope.channel, id))) {
           continue;
         }
@@ -257,13 +259,14 @@ class MessageHistoryVerification {
         final seq = BigInt.parse('${row['seq']}');
         if (initial.containsKey(id) ||
             lower != null && upper != null && seq >= lower && seq <= upper) {
-          accepted.add(row);
+          accepted.add(pending == null ? row : mergeMessageProjection(row, pending));
         }
       }
       w.messageWindows.acceptRows(
         request,
         scope.channel,
         accepted,
+        authoritative: true,
         visible: accepted
             .where(
               (row) =>
@@ -276,6 +279,7 @@ class MessageHistoryVerification {
             )
             .map((row) => row['id'] as String),
       );
+      w.messageSync.replaceBodies(scope.channel, accepted);
       final sequences = raw.map((row) => BigInt.parse('${row['seq']}')).toList()
         ..sort();
       final coversOldest =

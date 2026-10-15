@@ -1,4 +1,5 @@
 import 'message_history_pages.dart';
+import 'history_snapshot_writes.dart';
 import 'message_window_snapshot.dart';
 import 'workspace_controller.dart';
 import 'workspace_message_windows.dart';
@@ -6,6 +7,13 @@ import 'workspace_message_windows.dart';
 /// Compatibility snapshot adapter. Durable rows/ranges are owned separately;
 /// this keeps the previous version's rollback format and window boundaries.
 class MessageHistorySnapshots {
+  static Future<void> flush(WorkspaceController w) {
+    while (w.presentationSource != null) {
+      w = w.presentationSource!;
+    }
+    return HistorySnapshotWrites.flush(w);
+  }
+
   static bool restore(
     WorkspaceController w,
     String id,
@@ -52,10 +60,11 @@ class MessageHistorySnapshots {
     WorkspaceController w,
     String id, {
     required bool thread,
+    bool coalesce = false,
     required WorkspaceThreadIdentity? identity,
     required String Function(String?) replyToken,
     required Future<void> Function(String, String, dynamic) write,
-  }) async {
+  }) {
     if (!w.cacheWritable ||
         w.channelLoading && w.messageWindows.isContext(id) ||
         !thread && w.channel == null ||
@@ -63,10 +72,12 @@ class MessageHistorySnapshots {
         !w.messageWindows.notRevoked(id) ||
         (thread ? w.messageWindows.contextHasNewer(id) : w.hasNewer) ||
         w.highlightedMessageId != null) {
-      return;
+      return Future<void>.value();
     }
     final resource = thread ? w.threadSourceChannel : w.channel;
-    if (resource == null || !w.can('viewChannel', resource: resource)) return;
+    if (resource == null || !w.can('viewChannel', resource: resource)) {
+      return Future<void>.value();
+    }
     final authority = messageWindowAuthority(
       w.server?.string('role'),
       resource.json,
@@ -90,29 +101,61 @@ class MessageHistorySnapshots {
       'hasMore': thread ? w.threadHasMore : w.hasMore,
       'historyLimited': thread ? w.threadHistoryLimited : w.historyLimited,
     };
-    final saved = write('window', id, {
+    final window = {
       ...payload,
       'hasNewer': false,
       'threadSummaries': thread
           ? {}
           : Map<String, dynamic>.from(w.threadSummaries),
-    });
-    if (thread &&
-        identity != null &&
-        identity.focusedMessageId == null &&
-        w.messageWindows.notRevoked(identity.parentChannelId) &&
-        w.messageWindows.notRevoked(id)) {
-      final parent = w.threadParent;
-      await write('thread-window', identity.parentMessageId, {
-        ...payload,
-        'parentChannelId': identity.parentChannelId,
-        'threadChannelId': id,
-        if (parent != null &&
-            parent.id == identity.parentMessageId &&
-            parent.channelId == identity.parentChannelId)
-          'parent': parent.json,
-      });
+    };
+    final parent = w.threadParent;
+    final threadPayload =
+        thread &&
+            identity != null &&
+            identity.focusedMessageId == null &&
+            w.messageWindows.notRevoked(identity.parentChannelId) &&
+            w.messageWindows.notRevoked(id)
+        ? {
+            ...payload,
+            'parentChannelId': identity.parentChannelId,
+            'threadChannelId': id,
+            if (parent != null &&
+                parent.id == identity.parentMessageId &&
+                parent.channelId == identity.parentChannelId)
+              'parent': parent.json,
+          }
+        : null;
+    final parentId = thread ? w.threadParentChannelId ?? id : id;
+    final scope = (
+      w.client.origin,
+      w.client.user?.id,
+      w.client.serverId,
+      w.ledger.generation,
+      replyToken(parentId),
+    );
+    bool current() =>
+        w.cacheWritable &&
+        scope ==
+            (
+              w.client.origin,
+              w.client.user?.id,
+              w.client.serverId,
+              w.ledger.generation,
+              replyToken(parentId),
+            ) &&
+        w.messageWindows.notRevoked(id) &&
+        w.messageWindows.notRevoked(parentId);
+    Future<void> writeCopies() async {
+      if (!current()) return;
+      final saved = write('window', id, window);
+      if (threadPayload != null) {
+        await write('thread-window', identity!.parentMessageId, threadPayload);
+      }
+      await saved;
     }
-    await saved;
+
+    return coalesce && MessageHistoryPages.storage(w.cache) != null
+        ? HistorySnapshotWrites.schedule(w, (scope, id), writeCopies)
+        : HistorySnapshotWrites.writeNow(w, (scope, id), writeCopies);
   }
 }

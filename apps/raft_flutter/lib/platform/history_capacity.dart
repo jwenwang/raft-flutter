@@ -10,6 +10,7 @@ import '../data/message_history.dart';
 import '../data/workspace_cache_codec.dart';
 import 'message_history.dart' show HistoryOperationOrder;
 import 'history_size_counters.dart';
+import 'history_evictions.dart';
 import 'device_storage.dart';
 
 /// Retention shares the message connection, permission purges and revision
@@ -394,6 +395,8 @@ class SqliteHistoryCapacity implements HistoryCapacity {
     }
 
     await _initialize();
+    await HistoryEvictions(db).cleanAccount(a, order, current);
+    live();
     if (compact) {
       final plan = await compactionPlan(a);
       live();
@@ -640,6 +643,7 @@ class SqliteHistoryCapacity implements HistoryCapacity {
             entry.value.map((r) => r.read<String>('seq_key')).toList()..sort();
         await _invalidateNow(scope, sequences.first, sequences.last);
         await _shadowNow(scope, ids.toSet());
+        await HistoryEvictions(db).trimNow(scope);
       }
       await db.customStatement('DELETE FROM history_protected');
       await db.customStatement('DELETE FROM history_protected_scopes');

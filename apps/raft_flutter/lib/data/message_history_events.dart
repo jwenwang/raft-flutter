@@ -61,80 +61,106 @@ class MessageHistoryEvents {
       return;
     }
     final anchor = row['conversationContext'];
-    final current = _current(
-      w,
-      channels: [
-        '${row['channelId']}',
-        if (anchor is Map && anchor['parentChannelId'] is String)
-          anchor['parentChannelId'] as String,
-      ],
-    );
+    final parent = anchor is Map && anchor['parentChannelId'] is String
+        ? anchor['parentChannelId'] as String
+        : null;
+    final current = _current(w, channels: ['${row['channelId']}', ?parent]);
     final probe = _probe(w);
     final channel = '${row['channelId']}', id = '${row['id']}';
     final unheld = !w.ledger.contains(channel, id);
     final rowReceipt = db.receiver.beginRow(probe, channel, id);
     final receipt = updateOnly ? null : db.receiver.begin(probe, [row]);
-    final revision = db.receiverRevision(probe);
-    revision.ignore(); // The queued receiver awaits and handles this error.
-    unawaited(
-      db.receiver
-          .run(() async {
-            var success = false;
-            try {
-              if (!current()) return;
-              success = await _persist(
-                w,
-                db,
-                [row],
-                current,
-                updateOnly: updateOnly,
-                requestedRevision: await revision,
-                written: () => receipt?.finish(true),
-              );
-              if (success &&
-                  updateOnly &&
-                  unheld &&
-                  current() &&
-                  rowReceipt.current()) {
-                final pointer = w.ledger.message(channel, id);
-                if (pointer != null) {
-                  final scope = await db.knownScope(
-                    probe.origin,
-                    probe.principal,
-                    probe.server,
-                    channel,
-                  );
-                  final projection = scope == null
-                      ? null
-                      : await db.readContext(scope, id, radius: 0);
-                  if (current() &&
-                      rowReceipt.current() &&
-                      identical(pointer, w.ledger.message(channel, id)) &&
-                      projection != null) {
-                    final full = (projection['messages'] as List)
-                        .whereType<Map>()
-                        .where((m) => m['id'] == id)
-                        .firstOrNull;
-                    if (full != null) {
-                      w.ledger.ingestUpdate(
-                        Map<String, dynamic>.from(full),
-                        expectedGeneration: w.ledger.generation,
-                      );
-                      w.notifyListeners();
-                    }
-                  }
-                }
+    Future<void> apply(Map<String, dynamic> value, int revision) async {
+      var success = false, unresolved = false;
+      try {
+        if (!current()) return;
+        success = await _persist(
+          w,
+          db,
+          [value],
+          current,
+          updateOnly: updateOnly,
+          requestedRevision: revision,
+          written: () => receipt?.finish(true, resolved: true),
+          unresolved: () => unresolved = true,
+        );
+        if (success &&
+            updateOnly &&
+            unheld &&
+            current() &&
+            rowReceipt.current()) {
+          final pointer = w.ledger.message(channel, id);
+          if (pointer != null) {
+            final scope = await db.knownScope(
+              probe.origin,
+              probe.principal,
+              probe.server,
+              channel,
+            );
+            final projection = scope == null
+                ? null
+                : await db.readContext(scope, id, radius: 0);
+            if (current() &&
+                rowReceipt.current() &&
+                identical(pointer, w.ledger.message(channel, id)) &&
+                projection != null) {
+              final full = (projection['messages'] as List)
+                  .whereType<Map>()
+                  .where((m) => m['id'] == id)
+                  .firstOrNull;
+              if (full != null) {
+                final body = Map<String, dynamic>.from(full);
+                w.ledger.ingest(
+                  [body],
+                  expectedGeneration: w.ledger.generation,
+                  complete: true,
+                );
+                w.messageSync.replaceBodies(channel, [body]);
+                w.notifyListeners();
               }
-            } finally {
-              receipt?.finish(!current() || success);
-              rowReceipt.finish();
             }
-          })
-          .catchError((Object cause) {
-            if (current()) {
-              _saveFailed(w, cause);
-            }
-          }),
+          }
+        }
+      } finally {
+        receipt?.finish(
+          !current() || success,
+          unresolved: unresolved && current(),
+        );
+      }
+    }
+
+    late final Future<void> pending;
+    if (updateOnly) {
+      pending = db.receiver.coalesceUpdate(
+        w,
+        probe,
+        (
+          w,
+          probe.origin,
+          probe.principal,
+          probe.server,
+          channel,
+          id,
+          w.ledger.generation,
+          w.messageHistoryTicket(''),
+          w.messageHistoryTicket(channel),
+          parent,
+          w.messageHistoryTicket(parent ?? channel),
+          w.server?.string('role'),
+        ),
+        row,
+        () => db.receiverRevision(probe),
+        apply,
+      );
+    } else {
+      final revision = db.receiverRevision(probe);
+      revision.ignore();
+      pending = db.receiver.run(() async => apply(row, await revision));
+    }
+    unawaited(
+      pending.whenComplete(rowReceipt.finish).catchError((Object cause) {
+        if (current()) _saveFailed(w, cause);
+      }),
     );
   }
 
@@ -230,6 +256,7 @@ class MessageHistoryEvents {
     BigInt? through,
     required int requestedRevision,
     required void Function() written,
+    void Function()? unresolved,
   }) async {
     final grouped = <String, List<Map<String, dynamic>>>{};
     for (final row in rows) {
@@ -253,6 +280,7 @@ class MessageHistoryEvents {
       if (!current()) return false;
       if (scope == null) {
         if (updateOnly) continue;
+        unresolved?.call();
         return false;
       }
       if (!await db.acceptEvents(
@@ -276,7 +304,9 @@ class MessageHistoryEvents {
     if (!updateOnly && current()) {
       await db.checkpoint(checkpointScope, through ?? highest);
     }
-    if (current() && grouped.isNotEmpty) db.reads.count(HistoryReadReason.incremental);
+    if (current() && grouped.isNotEmpty) {
+      db.reads.count(HistoryReadReason.incremental);
+    }
     return current();
   }
 
@@ -340,7 +370,7 @@ class MessageHistoryEvents {
     };
     final cursor = BigInt.tryParse('${payload['currentSeq']}');
     Future<void> apply() async {
-      var committed = db == null;
+      var committed = db == null, unresolved = false;
       try {
         if (db != null && current()) {
           committed = await _persist(
@@ -351,9 +381,10 @@ class MessageHistoryEvents {
             through: cursor,
             requestedRevision: await revision!,
             written: () {
-              receipt?.finish(true, replayedThrough: cursor);
+              receipt?.finish(true, replayedThrough: cursor, resolved: true);
               db.receiver.confirmReplay(_probe(w), cursor);
             },
+            unresolved: () => unresolved = true,
           );
         }
       } catch (cause) {
@@ -361,7 +392,10 @@ class MessageHistoryEvents {
           _saveFailed(w, cause);
         }
       } finally {
-        receipt?.finish(!current() || committed);
+        receipt?.finish(
+          !current() || committed,
+          unresolved: unresolved && current(),
+        );
       }
       if (!current()) return;
       final accepted = rows
@@ -376,7 +410,8 @@ class MessageHistoryEvents {
       for (final row in accepted) {
         final id = row['channelId'];
         if (id == w.channel?.id && !w.hasNewer ||
-            id == w.threadChannelId && !w.messageWindows.contextHasNewer(id as String) ||
+            id == w.threadChannelId &&
+                !w.messageWindows.contextHasNewer(id as String) ||
             id is String && w.messageWindows.retainsLiveTail(id)) {
           w.messageWindows.reveal(liveWindowWrite, id, [row['id']]);
         }

@@ -2,6 +2,58 @@ import 'package:raft_sync/raft_sync.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('authoritative body replacement removes fields without changing sync progress or inventing rows', () {
+    final sync = MessageSync();
+    sync.consumeNew({
+      'id': 'a',
+      'channelId': 'chat',
+      'seq': '10',
+      'content': 'old',
+      'attachments': [
+        {'id': 'gone'},
+      ],
+    });
+    final progress = Map.of(sync.core.scopeSyncState('messages', 'chat')!);
+    sync.replaceBodies('chat', [
+      {'id': 'a', 'channelId': 'chat', 'seq': '10', 'content': 'fresh'},
+      {'id': 'missing', 'channelId': 'chat', 'seq': '11', 'content': 'unheld'},
+      {'id': 'a', 'channelId': 'other', 'seq': '12', 'content': 'wrong scope'},
+    ]);
+    sync.replaceBodies('unseen', [
+      {'id': 'new', 'channelId': 'unseen', 'seq': '20'},
+    ]);
+    expect(sync.messages('chat').single, {
+      'id': 'a',
+      'channelId': 'chat',
+      'seq': '10',
+      'content': 'fresh',
+    });
+    expect(sync.channelIds, ['chat']);
+    expect(sync.core.scopeSyncState('messages', 'chat'), progress);
+    expect(
+      sync.consumeNew({'id': 'a', 'channelId': 'chat', 'seq': '10'}),
+      isNull,
+    );
+    final ledger = MessageLedger()..switchServer('server');
+    ledger.ingest([
+      {
+        'id': 'a',
+        'channelId': 'chat',
+        'seq': '10',
+        'attachments': [1],
+      },
+    ], expectedGeneration: ledger.generation);
+    ledger.ingest(
+      [
+        {'id': 'a', 'channelId': 'chat', 'seq': '10', 'content': 'fresh'},
+      ],
+      expectedGeneration: ledger.generation,
+      complete: true,
+    );
+    expect(ledger.message('chat', 'a')!.containsKey('attachments'), isFalse);
+    expect(ledger.watermark, BigInt.from(10));
+  });
+
   test(
     'releasing bodies preserves sequence and activity through later messages',
     () {

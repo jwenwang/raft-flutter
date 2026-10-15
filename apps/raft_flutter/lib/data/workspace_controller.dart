@@ -1357,6 +1357,7 @@ class WorkspaceController extends ChangeNotifier {
   /// Writes every pending (debounced) change and completes once all queued
   /// device writes have landed.
   Future<void> flushCache() async {
+    await MessageHistorySnapshots.flush(this);
     await MessageHistoryPages.storage(cache)?.receiver.settled;
     await MessageHistoryPages.storage(cache)?.positionsSettled;
     if (_ownsEntityDirectory) entityDirectory.flushDevice();
@@ -1685,9 +1686,9 @@ class WorkspaceController extends ChangeNotifier {
   Future<void> saveHistoryWindow(String id, {bool thread = false}) =>
       _windowReceiver._saveWindow(id, thread: thread);
 
-  Future<void> _saveWindow(String id, {bool thread = false}) =>
+  Future<void> _saveWindow(String id, {bool thread = false, bool coalesce = false}) =>
       MessageHistorySnapshots.save(
-        this, id, thread: thread,
+        this, id, thread: thread, coalesce: coalesce,
         identity: _threadIdentity, replyToken: _replyToken, write: _save,
       );
 
@@ -6000,7 +6001,7 @@ class WorkspaceController extends ChangeNotifier {
           }
         }
         messageWindows.reveal(liveWindowWrite, id, [row['id']]);
-        _saveWindow(id, thread: id == threadChannelId);
+        _saveWindow(id, thread: id == threadChannelId, coalesce: event.name == 'message:updated');
       } else if (event.name == 'message:new' &&
           id is String &&
           row['id'] is String &&

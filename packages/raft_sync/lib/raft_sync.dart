@@ -95,13 +95,16 @@ class MessageLedger {
   bool ingest(
     Iterable<Map<String, dynamic>> messages, {
     required int expectedGeneration,
+    bool complete = false,
   }) {
     if (expectedGeneration != generation || _serverId == null) return false;
     for (final message in messages) {
       final id = message['id'], channelId = message['channelId'];
       if (id is! String || channelId is! String) continue;
       final bucket = _channels[channelId] ??= {};
-      bucket[id] = mergeMessageProjection(bucket[id], message);
+      bucket[id] = complete
+          ? Map<String, dynamic>.from(message)
+          : mergeMessageProjection(bucket[id], message);
       _changed(channelId);
       final seq = _seq(message);
       if (seq > watermark) watermark = seq;

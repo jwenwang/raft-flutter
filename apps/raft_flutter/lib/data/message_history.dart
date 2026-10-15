@@ -1,5 +1,9 @@
 import 'dart:collection';
+import 'dart:async';
 import 'dart:convert';
+
+import 'package:raft_sync/raft_sync.dart' show mergeMessageProjection;
+import 'package:raft_ui/raft_ui.dart' show RaftIdleTimer;
 
 import 'history_read_policy.dart';
 import 'history_capacity.dart';
@@ -135,10 +139,18 @@ abstract interface class MessageHistoryStorage {
   HistoryMemoryPool get memory;
   HistoryGapQueries get gaps;
   Future<SavedReadingPosition?> readPosition(MessageHistoryScope scope);
-  Future<void> savePosition(MessageHistoryScope scope, SavedReadingPosition? position);
+  Future<void> savePosition(
+    MessageHistoryScope scope,
+    SavedReadingPosition? position,
+  );
   Future<void> get positionsSettled;
   Future<DateTime?> lastVerified(MessageHistoryScope scope, String queryKey);
-  Future<bool> wasEvicted(MessageHistoryScope scope, {BigInt? before, BigInt? after, String? target});
+  Future<bool> wasEvicted(
+    MessageHistoryScope scope, {
+    BigInt? before,
+    BigInt? after,
+    String? target,
+  });
   Future<Map<String, Map<String, dynamic>?>> projections(
     MessageHistoryScope scope,
     Iterable<String> ids,
@@ -211,19 +223,36 @@ abstract interface class MessageHistoryStorage {
   );
 }
 
+/// A retention operation retired an in-flight read. Retry with a fresh fence.
+class HistoryReadRetired implements Exception {
+  const HistoryReadRetired();
+}
+
 class HistoryReceiverQueue {
   Future<void> _tail = Future<void>.value();
+  final _edits = <Object, _HistoryEditBatch>{};
+  final _waitingEdits = <_HistoryEditBatch>{};
+  final _zone = Zone.current;
+  bool _closed = false;
   final _rows = <(String, String, String, String, String), Object>{};
   Iterable<HistoryProtectedRows> get protectedRows sync* {
     final grouped = <(String, String, String, String), List<String>>{};
     for (final key in _rows.keys) {
-      grouped.putIfAbsent((key.$1, key.$2, key.$3, key.$4), () => []).add(key.$5);
+      grouped
+          .putIfAbsent((key.$1, key.$2, key.$3, key.$4), () => [])
+          .add(key.$5);
     }
     for (final entry in grouped.entries) {
       final key = entry.key;
-      yield HistoryProtectedRows(HistoryAccount(key.$1, key.$2), key.$3, key.$4, entry.value);
+      yield HistoryProtectedRows(
+        HistoryAccount(key.$1, key.$2),
+        key.$3,
+        key.$4,
+        entry.value,
+      );
     }
   }
+
   bool hasRow(MessageHistoryScope scope, String id) => _rows.containsKey((
     scope.origin,
     scope.principal,
@@ -249,14 +278,26 @@ class HistoryReceiverQueue {
     MessageHistoryScope scope,
     Iterable<Map<String, dynamic>> rows,
   ) {
+    final materialized = rows.toList();
     final sequences =
-        rows
+        materialized
             .map((r) => BigInt.tryParse('${r['seq']}'))
             .nonNulls
             .where((s) => s > BigInt.zero)
             .toList()
           ..sort();
     if (sequences.isEmpty) return null;
+    final identities = <(String, String), BigInt>{};
+    for (final row in materialized) {
+      final sequence = BigInt.tryParse('${row['seq']}');
+      if (row['channelId'] is String &&
+          row['id'] is String &&
+          sequence != null &&
+          sequence > BigInt.zero) {
+        identities[(row['channelId'] as String, row['id'] as String)] =
+            sequence;
+      }
+    }
     final key = (scope.origin, scope.principal, scope.server);
     final pending = _pending.putIfAbsent(
       key,
@@ -264,10 +305,12 @@ class HistoryReceiverQueue {
     );
     pending.count++;
     if (sequences.first < pending.lower) pending.lower = sequences.first;
-    return HistoryReceipt._((success, through) {
+    return HistoryReceipt._((success, through, unresolved, resolved) {
       if (!identical(_pending[key], pending)) return;
       pending.count--;
-      if (!success) {
+      if (!success && unresolved) {
+        pending.unresolved.addAll(identities);
+      } else if (!success) {
         final failed = sequences.last;
         if (pending.failedThrough == null || failed > pending.failedThrough!) {
           pending.failedThrough = failed;
@@ -277,7 +320,14 @@ class HistoryReceiverQueue {
           through >= pending.failedThrough!) {
         pending.failedThrough = null;
       }
-      if (pending.count == 0 && pending.failedThrough == null) {
+      if (success && resolved) {
+        for (final id in identities.keys) {
+          pending.unresolved.remove(id);
+        }
+      }
+      if (pending.count == 0 &&
+          pending.failedThrough == null &&
+          pending.unresolved.isEmpty) {
         _pending.remove(key);
       }
     });
@@ -302,21 +352,166 @@ class HistoryReceiverQueue {
       return;
     }
     pending.failedThrough = null;
-    if (pending.count == 0) _pending.remove(key);
+    if (pending.count == 0 && pending.unresolved.isEmpty) _pending.remove(key);
+  }
+
+  void clearServer(String origin, String principal, String server) {
+    _cancelEdits(
+      (batch) =>
+          batch.scope.origin == origin &&
+          batch.scope.principal == principal &&
+          batch.scope.server == server,
+    );
+    _pending.remove((origin, principal, server));
+    _rows.removeWhere(
+      (key, _) => key.$1 == origin && key.$2 == principal && key.$3 == server,
+    );
+  }
+
+  void revokeScopes(
+    String origin,
+    String principal,
+    String server,
+    Set<String> channels,
+  ) {
+    _cancelEdits(
+      (batch) =>
+          batch.scope.origin == origin &&
+          batch.scope.principal == principal &&
+          batch.scope.server == server &&
+          channels.contains(batch.row['channelId']),
+    );
+    final key = (origin, principal, server),
+        pending = _pending[(origin, principal, server)];
+    pending?.unresolved.removeWhere((id, _) => channels.contains(id.$1));
+    _rows.removeWhere(
+      (key, _) =>
+          key.$1 == origin &&
+          key.$2 == principal &&
+          key.$3 == server &&
+          channels.contains(key.$4),
+    );
+    if (pending != null &&
+        pending.count == 0 &&
+        pending.failedThrough == null &&
+        pending.unresolved.isEmpty) {
+      _pending.remove(key);
+    }
   }
 
   void clearAccount(String origin, String principal) {
+    _cancelEdits(
+      (batch) =>
+          batch.scope.origin == origin && batch.scope.principal == principal,
+    );
     _pending.removeWhere((key, _) => key.$1 == origin && key.$2 == principal);
     _rows.removeWhere((key, _) => key.$1 == origin && key.$2 == principal);
   }
 
   Future<T> run<T>(Future<T> Function() action) {
+    // A new message or replay is an ordering barrier between edit batches.
+    _edits.clear();
+    return _append(action);
+  }
+
+  Future<void> coalesceUpdate(
+    Object owner,
+    MessageHistoryScope scope,
+    Object key,
+    Map<String, dynamic> row,
+    Future<int> Function() reserve,
+    Future<void> Function(Map<String, dynamic>, int) apply,
+  ) {
+    if (_closed) return Future<void>.value();
+    final existing = _edits[key];
+    if (existing != null) {
+      existing.row = mergeMessageProjection(existing.row, row);
+      existing.apply = apply;
+      return existing.done;
+    }
+    final revision = reserve();
+    revision.ignore();
+    final batch = _HistoryEditBatch(owner, scope, Map.of(row), revision, apply);
+    _edits[key] = batch;
+    _waitingEdits.add(batch);
+    _zone.run(
+      () => batch.timer.start(const Duration(milliseconds: 60), () {
+        if (!batch.ready.isCompleted) batch.ready.complete();
+      }),
+    );
+    return batch.done = _append(() async {
+      // One fixed positive deadline; continuous input cannot postpone it.
+      // This waits outside the database queue, so local reads stay available.
+      await batch.ready.future;
+      if (identical(_edits[key], batch)) _edits.remove(key);
+      try {
+        if (!batch.retired) await batch.apply(batch.row, await batch.revision);
+      } finally {
+        _waitingEdits.remove(batch);
+      }
+    });
+  }
+
+  Map<String, dynamic>? pendingUpdate(MessageHistoryScope scope, String id) {
+    Map<String, dynamic>? patch;
+    for (final batch in _waitingEdits) {
+      if (!batch.retired &&
+          batch.scope.origin == scope.origin &&
+          batch.scope.principal == scope.principal &&
+          batch.scope.server == scope.server &&
+          batch.row['channelId'] == scope.channel &&
+          batch.row['id'] == id) {
+        patch = mergeMessageProjection(patch, batch.row);
+      }
+    }
+    return patch;
+  }
+
+  void _cancelEdits(bool Function(_HistoryEditBatch) matches) {
+    for (final batch in _waitingEdits.where(matches).toList()) {
+      batch.retired = true;
+      batch.timer.cancel();
+      if (!batch.ready.isCompleted) batch.ready.complete();
+    }
+    _edits.removeWhere((_, batch) => matches(batch));
+  }
+
+  void cancelUpdates(Object owner) =>
+      _cancelEdits((batch) => identical(batch.owner, owner));
+
+  void close() {
+    _closed = true;
+    _cancelEdits((_) => true);
+    _pending.clear();
+    _rows.clear();
+  }
+
+  Future<T> _append<T>(Future<T> Function() action) {
     final next = _tail.then((_) => action());
     _tail = next.then<void>((_) {}, onError: (Object _, StackTrace _) {});
     return next;
   }
 
   Future<void> get settled => _tail;
+}
+
+class _HistoryEditBatch {
+  _HistoryEditBatch(
+    this.owner,
+    this.scope,
+    this.row,
+    this.revision,
+    this.apply,
+  );
+  final Object owner;
+  final MessageHistoryScope scope;
+  final timer = RaftIdleTimer(yieldToAnimation: false);
+  final ready = Completer<void>();
+  bool retired = false;
+  Map<String, dynamic> row;
+  final Future<int> revision;
+  Future<void> Function(Map<String, dynamic>, int) apply;
+  late Future<void> done;
 }
 
 class HistoryRowReceipt {
@@ -329,16 +524,22 @@ class _HistoryPending {
   _HistoryPending(this.lower);
   BigInt lower;
   BigInt? failedThrough;
+  final unresolved = <(String, String), BigInt>{};
   int count = 0;
 }
 
 class HistoryReceipt {
   HistoryReceipt._(this._complete);
-  final void Function(bool, BigInt?) _complete;
+  final void Function(bool, BigInt?, bool, bool) _complete;
   bool _finished = false;
-  void finish(bool success, {BigInt? replayedThrough}) {
+  void finish(
+    bool success, {
+    BigInt? replayedThrough,
+    bool unresolved = false,
+    bool resolved = false,
+  }) {
     if (_finished) return;
     _finished = true;
-    _complete(success, replayedThrough);
+    _complete(success, replayedThrough, unresolved, resolved);
   }
 }

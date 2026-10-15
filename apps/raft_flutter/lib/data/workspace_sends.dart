@@ -47,7 +47,7 @@ class ComposerSendVisit {
 class ComposerPendingSend {
   ComposerPendingSend(this.attempt, this.row, this.draft, this.uploads);
   final ComposerSendAttempt attempt;
-  final Map<String, dynamic> row;
+  final RaftMessage row;
   final String draft;
   final List<UploadDraft> uploads;
   String get randomId => attempt.randomId;
@@ -100,7 +100,7 @@ class WorkspaceSends {
     return [
       ...rows,
       for (final send in sends)
-        if (!confirmed.contains(send.randomId)) RaftMessage(send.row),
+        if (!confirmed.contains(send.randomId)) send.row,
     ]..sort((a, b) {
       BigInt? sequence(RaftMessage row) => BigInt.tryParse(
         '${row.json['seq'] ?? row.json['optimisticDisplaySeq']}',
@@ -231,15 +231,15 @@ class WorkspaceSends {
     final displaySeq =
         (pending[scope] ?? const <ComposerPendingSend>[]).fold(
           visit.displaySeq,
-          (maximum, pending) {
-            final value = BigInt.parse(pending.row['optimisticDisplaySeq']);
+          (maximum, send) {
+            final value = BigInt.parse(send.row.json['optimisticDisplaySeq']);
             return value > maximum ? value : maximum;
           },
         ) +
         BigInt.one;
     final send = ComposerPendingSend(
       attempt,
-      {
+      RaftMessage({
         'id': 'optimistic-${attempt.randomId}',
         'randomId': attempt.randomId,
         'channelId': visit.channelId,
@@ -260,7 +260,7 @@ class WorkspaceSends {
                   },
           ],
         'pendingSend': true,
-      },
+      }),
       text,
       selectedFiles,
     );

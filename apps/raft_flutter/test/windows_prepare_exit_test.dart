@@ -13,9 +13,10 @@ void main() {
   late WindowsTray tray;
   final originalLog = cacheExitLog;
 
-  setUp(() {
+  setUp(() async {
     tray = WindowsTray(platform: TargetPlatform.windows, channel: channel);
     messenger.setMockMethodCallHandler(channel, (_) async => null);
+    await tray.initialize((source) => source);
   });
 
   tearDown(() async {
@@ -107,9 +108,19 @@ void main() {
     expect(lines, ['raft.cache_exit completed']);
   });
 
-  test('hide still notifies after prepareExit is installed', () async {
+  test('a settings instance leaves hidden and prepareExit on the initialized receiver', () async {
     var hidden = 0;
     tray.onHidden = () => hidden++;
+    final settings = WindowsTray(
+      platform: TargetPlatform.windows,
+      channel: channel,
+    );
+    addTearDown(settings.dispose);
+    cachePrepareExit = () async => CacheExitOutcome.completed;
+    expect(await ask(11, 'explicitQuit'), {
+      'requestId': 11,
+      'outcome': 'completed',
+    });
     final done = Completer<ByteData?>();
     messenger.handlePlatformMessage(
       channel.name,
@@ -119,15 +130,6 @@ void main() {
       done.complete,
     );
     await done.future;
-    await tray.initialize((source) => source);
-    messenger.handlePlatformMessage(
-      channel.name,
-      const StandardMethodCodec().encodeMethodCall(
-        const MethodCall('hidden', true),
-      ),
-      (_) {},
-    );
-    await Future<void>.delayed(Duration.zero);
-    expect(hidden, 2);
+    expect(hidden, 1);
   });
 }

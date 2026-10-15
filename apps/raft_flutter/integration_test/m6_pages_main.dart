@@ -3,11 +3,9 @@
 // lab fixtures. Tasks are pageTasksFixture. Saved is pageSavedFixture.
 //
 //   tool/flutter build apk --profile \
-//     -t integration_test/m6_pages_main.dart \
-//     --dart-define=M6_DIRECT=true
+//     -t integration_test/m6_pages_main.dart
 //
-// Omit M6_DIRECT for the off mode. The define presets the stored preference
-// before the first frame, so neither mode opens Labs. Starts at /s/lab/tasks.
+// Phone settings, tasks, and saved read the workspace. Starts at /s/lab/tasks.
 // Saved is Home, then nav-saved. Settings is the Settings tab. Use a phone-sized
 // simulator so these routes stay in the phone shell. This entry does not choose
 // an application id.
@@ -17,7 +15,6 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:raft_flutter/data/device_preferences.dart';
 import 'package:raft_flutter/data/source_time_formatter.dart';
-import 'package:raft_flutter/features/mobile_settings_owner.dart';
 import 'package:raft_flutter/features/page_alignment_fixtures.dart';
 import 'package:raft_flutter/main.dart' as app;
 import 'package:raft_flutter/platform/android_performance_hint.dart';
@@ -28,8 +25,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'perf_lab/fixtures.dart';
 import 'perf_lab/navigation_host.dart';
-
-const _direct = bool.fromEnvironment('M6_DIRECT');
 
 Future<void> main() async {
   RaftWidgetsFlutterBinding.ensureInitialized();
@@ -100,7 +95,6 @@ Future<void> main() async {
     'raft.origin': client.origin,
     'raft.mode': 'light',
     'raft.light': 'elegant',
-    if (_direct) MobileSettingsPreference.preferenceKey: true,
   });
   await DevicePreferences.load();
   final support = await getApplicationSupportDirectory();

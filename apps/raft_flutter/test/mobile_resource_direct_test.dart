@@ -15,20 +15,11 @@ Future<void> settle(WidgetTester t) async {
 void main() {
   tearDown(MobileSettingsPreference.instance.resetForTest);
 
-  testWidgets('the open tasks page waits for the next entry', (t) async {
-    MobileSettingsPreference.instance.resetForTest();
+  testWidgets('the open tasks page reads the workspace on the first entry', (
+    t,
+  ) async {
     final f = RootFixture();
     await f.mount(t, 'elegant-light', 390, uri: Uri.parse('/s/alpha/tasks'));
-    await settle(t);
-    expect(find.byType(MobileResourceDirectPage), findsNothing);
-    MobileSettingsPreference.instance.setEnabled(true);
-    await t.pump();
-    expect(find.byType(MobileResourceDirectPage), findsNothing);
-    await t.tap(find.byKey(const Key('mobile-tab-settings')));
-    await f.flush(t);
-    await settle(t);
-    await t.tap(find.byKey(const Key('mobile-tab-tasks')));
-    await f.flush(t);
     await settle(t);
     expect(find.byType(MobileResourceDirectPage), findsOneWidget);
     await f.close(t);
@@ -39,12 +30,7 @@ void main() {
       MobileSettingsPreference.instance.resetForTest();
       MobileSettingsPreference.instance.setEnabled(true);
       final f = RootFixture();
-      await f.mount(
-        t,
-        'elegant-light',
-        390,
-        uri: Uri.parse('/s/alpha/$route'),
-      );
+      await f.mount(t, 'elegant-light', 390, uri: Uri.parse('/s/alpha/$route'));
       await settle(t);
       expect(find.byType(MobileResourceDirectPage), findsOneWidget);
       final list = t.widget<ResourceView>(find.byType(ResourceView));

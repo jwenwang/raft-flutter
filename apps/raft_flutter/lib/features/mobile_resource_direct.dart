@@ -1,7 +1,6 @@
 import 'package:flutter/widgets.dart';
 
 import '../data/workspace_controller.dart';
-import 'mobile_workspace_pages.dart';
 
 /// Principal, page, and every value that changes how the list is built.
 /// Messages and presence are not inputs.
@@ -23,13 +22,14 @@ Object mobileResourceInputs(
       activityMasterDetail,
     );
 
-/// Phone tasks and saved. Off builds [buildList] on the page controller.
-/// On keeps one list for the active page, and rebuilds it when [inputs] change.
+/// Phone tasks and saved keep one list for the active page, and rebuild it
+/// when [inputs] change. A covered route drops that list.
 Widget mobileResourceBody({
   required String route,
   required WorkspaceController page,
   required WorkspaceController? outer,
   required bool direct,
+  required bool Function() active,
   required bool wide,
   required String? rootTab,
   required bool activityMasterDetail,
@@ -45,9 +45,7 @@ Widget mobileResourceBody({
       rootTab: rootTab,
       activityMasterDetail: activityMasterDetail,
     ),
-    active: () =>
-        mobilePageIdentity(page.location) ==
-        mobilePageIdentity(outer.location),
+    active: active,
     buildList: () => buildList(outer),
   );
 }
@@ -77,6 +75,7 @@ class _MobileResourceDirectPageState extends State<MobileResourceDirectPage> {
 
   @override
   Widget build(BuildContext context) {
+    TickerMode.valuesOf(context);
     if (!widget.active()) {
       _leaf = null;
       _inputs = null;

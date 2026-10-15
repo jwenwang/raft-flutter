@@ -253,20 +253,20 @@
         "field._MobileNavigationSelection.host": 1,
         "field._MobileNavigationSelection.inputs": 1,
         "field._MobileNavigationSelection.source": 1,
-        "field._MobilePageController.pageNavigation": 1,
-        "field._MobilePageNavigation.source": 1,
+        "field._MobilePageController.pageNavigation": 0,
+        "field._MobilePageNavigation.source": 0,
         "field._MobileWorkspaceRoute.host": 1,
         "field._MobileWorkspaceRoute.location": 1,
         "field._MobileWorkspaceRouteState.content": 1,
-        "field._MobileWorkspaceRouteState.controller": 1,
-        "field._MobileWorkspaceRouteState.pageDirect": 1,
+        "field._MobileWorkspaceRouteState.controller": 0,
+        "field._MobileWorkspaceRouteState.pageDirect": 0,
         "field._MobileWorkspaceRouteState.routeWasActive": 1,
         "field._WorkspaceViewState._desktopNavigation": 1,
         "field._WorkspaceViewState._mobileNavigationSelection": 1,
         "field._WorkspaceViewState._ownedMobileTabbar": 1,
         "field._WorkspaceViewState._ownedRailSide": 1,
-        "field._WorkspaceViewState.accountSettingsInputs": 1,
-        "field._WorkspaceViewState.accountSettingsWidget": 1,
+        "field._WorkspaceViewState.accountSettingsInputs": 0,
+        "field._WorkspaceViewState.accountSettingsWidget": 0,
         "field._WorkspaceViewState.activityDirectory": 1,
         "field._WorkspaceViewState.activityFlag": 1,
         "field._WorkspaceViewState.activityUnread": 1,
@@ -341,8 +341,8 @@
         "field._WorkspaceViewState.threadWidth": 1,
         "field._WorkspaceViewState.workspaceErrorScheduled": 1,
         "field._WorkspaceViewState.workspaceMode": 1,
-        "lines": 5107,
-        "tokens": 26537
+        "lines": 5017,
+        "tokens": 26221
       }
     },
     "resource_view": {
@@ -621,8 +621,8 @@
         "field._RaftChatViewState.viewport": 1,
         "field._RaftChatViewState.windowIndex": 1,
         "field._RaftChatViewState.windowRevision": 1,
-        "lines": 3737,
-        "tokens": 20555
+        "lines": 3671,
+        "tokens": 20308
       }
     },
     "main": {

@@ -258,27 +258,18 @@ void main() {
     },
   );
 
-  test('a retained phone page borrows its original channel window', () async {
-    final alpha = w.messageWindow!;
-    final page = WorkspaceController(
-      client,
-      presentationSource: w,
-      ownsClient: false,
-      entityDirectory: w.entityDirectory,
-      followedThreads: w.followedThreads,
-    );
-    addTearDown(page.dispose);
-    page.synchronizePagePresentation(w, active: true);
-    expect(identical(page.messageWindows, w.messageWindows), isTrue);
-    expect(identical(page.messageWindow, alpha), isTrue);
-    page.synchronizePagePresentation(w, active: false);
-    await w.selectChannel(w.channels.last, autoRead: false, navigate: false);
-    expect(page.channel?.id, 'alpha');
-    expect(identical(page.messageWindow, alpha), isTrue);
-    expect(alpha.rows.every((row) => row.channelId == 'alpha'), isTrue);
-    expect(w.messageWindow!.channelId, 'beta');
-    expect(alpha.visible, isFalse);
-  });
+  test(
+    'a retained channel window keeps its rows after the source moves',
+    () async {
+      final alpha = w.messageWindow!;
+      expect(identical(alpha, w.messageWindows.channel('alpha')), isTrue);
+      await w.selectChannel(w.channels.last, autoRead: false, navigate: false);
+      expect(identical(w.messageWindows.channel('alpha'), alpha), isTrue);
+      expect(alpha.rows.every((row) => row.channelId == 'alpha'), isTrue);
+      expect(w.messageWindow!.channelId, 'beta');
+      expect(alpha.visible, isFalse);
+    },
+  );
 
   test('grid windows remain independent while sharing the composer', () async {
     final grid = WorkspaceGridSessions(w);

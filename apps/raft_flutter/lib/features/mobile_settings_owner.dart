@@ -2,8 +2,6 @@ import 'dart:convert';
 
 import 'package:flutter/widgets.dart';
 import 'package:raft_ui/raft_ui.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
 import '../data/device_preferences.dart';
 import '../data/mobile_tabbar_preferences.dart';
 import '../data/personal_presentation.dart';
@@ -18,92 +16,21 @@ import '../platform/native_notifications.dart';
 import 'workspace_mode_settings_card.dart';
 import 'workspace_settings.dart';
 
-/// Device-local choice for migrated phone pages. Off keeps today's pages.
-/// On, those pages read the workspace. Default is off. The key stays put.
+/// Phone settings, tasks, saved, and chat always read the workspace.
+/// The key remains so older installs and tests still compile.
 class MobileSettingsPreference extends ChangeNotifier {
   MobileSettingsPreference._();
   static final instance = MobileSettingsPreference._();
   static const preferenceKey = 'raft.mobileSettingsDirect';
 
-  /// Test override. Null reads the device preference.
-  bool? _override;
+  bool get enabled => true;
 
-  bool get enabled => _override ?? _stored();
+  void setEnabled(bool next) {}
 
-  bool _stored() {
-    try {
-      return DevicePreferences.current?.getBool(preferenceKey) ?? false;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  void setEnabled(bool next) {
-    final changed = next != enabled;
-    // Latch the choice even when it already matches storage. A later
-    // preference reload must not drop a choice this session already made.
-    _override = next;
-    if (!changed) return;
-    final loaded = DevicePreferences.current;
-    Future<void> write(SharedPreferences prefs) async {
-      try {
-        next
-            ? await prefs.setBool(preferenceKey, true)
-            : await prefs.remove(preferenceKey);
-      } catch (_) {
-        /* optional local storage */
-      }
-    }
-
-    if (loaded != null) {
-      write(loaded);
-    } else {
-      SharedPreferences.getInstance().then(write, onError: (_) {});
-    }
-    notifyListeners();
-  }
-
-  /// Drops the in-memory override. Tests call this between cases.
   void resetForTest() {
-    _override = null;
     try {
       DevicePreferences.current?.remove(preferenceKey);
     } catch (_) {}
-  }
-}
-
-/// One visit to a migrated phone route. The preference is read when the route
-/// becomes active and stays until it is inactive, so a switch flipped on the
-/// open page waits for the next entry.
-/// The phone shell reads this. Only the active settings route writes it.
-final mobileSettingsDirectHost = Expando<bool>();
-
-class MobileSettingsVisit {
-  static final _open = Expando<bool>();
-  static final _direct = Expando<bool>();
-
-  static bool choose(
-    Object visit, {
-    required bool active,
-    required bool enabled,
-  }) {
-    if (!active) {
-      _open[visit] = false;
-      return _direct[visit] ?? false;
-    }
-    if (_open[visit] != true) _direct[visit] = enabled;
-    _open[visit] = true;
-    return _direct[visit] ?? false;
-  }
-
-  static bool current(Object visit) => _direct[visit] ?? false;
-
-  /// The covered settings route may not rebuild while a sub-page is open.
-  static void noteHidden(Object visit) => _open[visit] = false;
-
-  static void clear(Object visit) {
-    _open[visit] = null;
-    _direct[visit] = null;
   }
 }
 
@@ -346,56 +273,4 @@ void _openSettingsTab({
   controller.notifyListeners();
 }
 
-/// Device-local phone settings control. Labs shows it on a compact
-/// debug or profile build. The settings page does not.
-class MobileSettingsSwitch extends StatefulWidget {
-  const MobileSettingsSwitch({super.key});
 
-  @override
-  State<MobileSettingsSwitch> createState() => _MobileSettingsSwitchState();
-}
-
-class _MobileSettingsSwitchState extends State<MobileSettingsSwitch> {
-  final preference = MobileSettingsPreference.instance;
-
-  @override
-  void initState() {
-    super.initState();
-    preference.addListener(_changed);
-  }
-
-  void _changed() {
-    if (mounted) setState(() {});
-  }
-
-  @override
-  void dispose() {
-    preference.removeListener(_changed);
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(left: RaftSpace.x4, top: RaftSpace.x2, right: RaftSpace.x4),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              raftText(
-                context,
-                'Labs. Phone pages use the workspace directly. Applies the next time you open the page.',
-              ),
-            ),
-          ),
-          RaftSwitch(
-            key: const Key('mobile-settings-direct-switch'),
-            value: preference.enabled,
-            semanticLabel: raftText(context, 'Labs'),
-            onChanged: preference.setEnabled,
-          ),
-        ],
-      ),
-    );
-  }
-}

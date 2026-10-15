@@ -15,35 +15,31 @@ void main() {
   setUp(MobileSettingsPreference.instance.resetForTest);
   tearDown(MobileSettingsPreference.instance.resetForTest);
 
-  testWidgets(
-    'phone settings keeps the open form when the switch flips and applies it on the next entry',
-    (t) async {
-      final f = RootFixture();
-      await f.mount(t, 'elegant-light', 390, uri: Uri.parse('/s/alpha/settings'));
-      expect(find.byKey(const Key('mobile-settings-direct-switch')), findsNothing);
-      await t.tap(find.byKey(const ValueKey('workspace-settings-nav-account')));
-      await f.flush(t);
-      await settleRoute(t);
-      final name = find.byKey(const Key('account-profile-display-name'));
-      await t.ensureVisible(name);
-      await t.enterText(name, 'Kept while open');
-      await t.pump();
-      expect(find.byType(MobileSettingsDirectPage), findsNothing);
-      expect(find.byKey(const Key('mobile-settings-direct-switch')), findsNothing);
-      MobileSettingsPreference.instance.setEnabled(true);
-      await t.pump();
-      expect(find.text('Kept while open'), findsOneWidget);
-      expect(find.byType(MobileSettingsDirectPage), findsNothing);
-      expect(find.byKey(const Key('mobile-settings-direct-switch')), findsNothing);
-      expect(MobileSettingsPreference.instance.enabled, isTrue);
-
-      await t.tap(find.byKey(const Key('mobile-settings-back')));
-      await f.flush(t);
-      await settleRoute(t);
-      expect(find.byType(MobileSettingsDirectPage), findsOneWidget);
-      await f.close(t);
-    },
-  );
+  testWidgets('phone settings reads the workspace on the first open', (
+    t,
+  ) async {
+    final f = RootFixture();
+    await f.mount(t, 'elegant-light', 390, uri: Uri.parse('/s/alpha/settings'));
+    expect(find.byType(MobileSettingsDirectPage), findsOneWidget);
+    expect(
+      find.byKey(const Key('mobile-settings-direct-switch')),
+      findsNothing,
+    );
+    await t.tap(find.byKey(const ValueKey('workspace-settings-nav-account')));
+    await f.flush(t);
+    await settleRoute(t);
+    final name = find.byKey(const Key('account-profile-display-name'));
+    await t.ensureVisible(name);
+    await t.enterText(name, 'Kept while open');
+    await t.pump();
+    expect(find.text('Kept while open'), findsOneWidget);
+    expect(find.byType(MobileSettingsDirectPage), findsOneWidget);
+    expect(
+      find.byKey(const Key('mobile-settings-direct-switch')),
+      findsNothing,
+    );
+    await f.close(t);
+  });
 
   testWidgets(
     'direct phone settings ignores new messages and rebuilds when the role changes',
@@ -51,7 +47,12 @@ void main() {
       MobileSettingsPreference.instance.setEnabled(true);
       MobileSettingsDirectPage.builds = 0;
       final f = RootFixture();
-      await f.mount(t, 'elegant-light', 390, uri: Uri.parse('/s/alpha/settings'));
+      await f.mount(
+        t,
+        'elegant-light',
+        390,
+        uri: Uri.parse('/s/alpha/settings'),
+      );
       expect(find.byType(MobileSettingsDirectPage), findsOneWidget);
       final before = MobileSettingsDirectPage.builds;
       expect(before, greaterThan(0));
@@ -89,7 +90,10 @@ void main() {
       1280,
       uri: Uri.parse('/s/alpha/settings'),
     );
-    expect(find.byKey(const Key('mobile-settings-direct-switch')), findsNothing);
+    expect(
+      find.byKey(const Key('mobile-settings-direct-switch')),
+      findsNothing,
+    );
     expect(find.byType(MobileSettingsDirectPage), findsNothing);
     expect(find.byType(WorkspaceSettings), findsOneWidget);
     await f.close(t);

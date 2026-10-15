@@ -6,7 +6,6 @@ import 'package:raft_flutter/data/raft_location.dart';
 import 'package:raft_flutter/data/workspace_controller.dart'
     show MessageContextLoadError;
 import 'package:raft_flutter/features/chat_view.dart';
-import 'package:raft_flutter/features/mobile_settings_owner.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_global_server_selector_test.dart' show RootFixture;
@@ -539,71 +538,62 @@ void main() {
     },
   );
 
-  for (final direct in [false, true]) {
-    testWidgets(
-      'a phone jump keeps the old row until the context window is accepted when direct is $direct',
-      (t) async {
-        MobileSettingsPreference.instance.setEnabled(direct);
-        addTearDown(MobileSettingsPreference.instance.resetForTest);
-        final f = RootFixture();
-        final context = Completer<Map<String, dynamic>>();
-        f.holds['GET /messages/context/target'] = context;
-        await f.mount(
-          t,
-          'elegant-light',
-          390,
-          uri: Uri(path: '/s/alpha/channel/ca'),
-        );
-        expect(find.text('Accepted a'), findsOneWidget);
-        expect(
-          find.byType(MobileChatDirectRead),
-          direct ? findsWidgets : findsNothing,
-        );
-        final before = t.getRect(find.text('Accepted a'));
-        var blanked = false;
-        f.onFrame = () {
-          if (find.text('Accepted a').evaluate().isEmpty &&
-              find.text('Jumped target').evaluate().isEmpty) {
-            blanked = true;
-          }
-        };
-        var finished = false;
-        final jumping = f.workspace(t).jumpToMessage(
-          'ca',
-          'target',
-          navigate: false,
-        );
-        jumping.whenComplete(() => finished = true);
-        await f.flush(t);
-        expect(find.text('Accepted a'), findsOneWidget);
-        final during = t.getRect(find.text('Accepted a'));
-        expect((during.top - before.top).abs(), lessThan(1));
-        expect(finished, isFalse);
-        context.complete({
-          'messages': [
-            {
-              'id': 'target',
-              'channelId': 'ca',
-              'seq': '9',
-              'senderId': 'alice',
-              'senderName': 'Alice',
-              'content': 'Jumped target',
-              'createdAt': '2026-10-10T00:02:00Z',
-            },
-          ],
-          'targetMessageId': 'target',
-          'hasOlder': false,
-          'hasNewer': false,
-        });
-        for (var i = 0; i < 8 && !finished; i++) {
-          await f.flush(t);
+  testWidgets(
+    'a phone jump keeps the old row until the context window is accepted',
+    (t) async {
+      final f = RootFixture();
+      final context = Completer<Map<String, dynamic>>();
+      f.holds['GET /messages/context/target'] = context;
+      await f.mount(
+        t,
+        'elegant-light',
+        390,
+        uri: Uri(path: '/s/alpha/channel/ca'),
+      );
+      expect(find.text('Accepted a'), findsOneWidget);
+      expect(find.byType(MobileChatDirectRead), findsWidgets);
+      final before = t.getRect(find.text('Accepted a'));
+      var blanked = false;
+      f.onFrame = () {
+        if (find.text('Accepted a').evaluate().isEmpty &&
+            find.text('Jumped target').evaluate().isEmpty) {
+          blanked = true;
         }
-        expect(finished, isTrue);
-        expect(blanked, isFalse);
-        expect(find.text('Jumped target'), findsOneWidget);
-        expect(find.text('Accepted a'), findsNothing);
-        await f.close(t);
-      },
-    );
-  }
+      };
+      var finished = false;
+      final jumping = f
+          .workspace(t)
+          .jumpToMessage('ca', 'target', navigate: false);
+      jumping.whenComplete(() => finished = true);
+      await f.flush(t);
+      expect(find.text('Accepted a'), findsOneWidget);
+      final during = t.getRect(find.text('Accepted a'));
+      expect((during.top - before.top).abs(), lessThan(1));
+      expect(finished, isFalse);
+      context.complete({
+        'messages': [
+          {
+            'id': 'target',
+            'channelId': 'ca',
+            'seq': '9',
+            'senderId': 'alice',
+            'senderName': 'Alice',
+            'content': 'Jumped target',
+            'createdAt': '2026-10-10T00:02:00Z',
+          },
+        ],
+        'targetMessageId': 'target',
+        'hasOlder': false,
+        'hasNewer': false,
+      });
+      for (var i = 0; i < 8 && !finished; i++) {
+        await f.flush(t);
+      }
+      expect(finished, isTrue);
+      expect(blanked, isFalse);
+      expect(find.text('Jumped target'), findsOneWidget);
+      expect(find.text('Accepted a'), findsNothing);
+      await f.close(t);
+    },
+  );
 }

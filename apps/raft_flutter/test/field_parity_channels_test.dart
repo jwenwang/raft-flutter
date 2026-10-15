@@ -266,35 +266,6 @@ void main() {
         expect(w.planRevision, before + 1);
       },
     );
-
-    test(
-      'a phone page mirror sees the bump (Plan & Billing reloads)',
-      () async {
-        final payload =
-            (_fixture('members-socket-server-plan-updated') as Map)['payload']
-                as Map;
-        final (w, _, client) = await _controller();
-        addTearDown(w.dispose);
-        w.servers = [
-          RaftRecord({'id': payload['serverId'], 'plan': 'free'}),
-        ];
-        w.server = w.servers.first;
-        final page = WorkspaceController(
-          client,
-          presentationSource: w,
-          ownsClient: false,
-          mobileNavigation: true,
-        );
-        addTearDown(page.dispose);
-        page.synchronizePagePresentation(w, active: true);
-        expect(page.planRevision, w.planRevision);
-        client.emit('server:plan-updated', payload);
-        await _drain();
-        page.synchronizePagePresentation(w, active: true);
-        expect(w.planRevision, greaterThan(0));
-        expect(page.planRevision, w.planRevision);
-      },
-    );
   });
 
   group('message_display_prefs:updated', () {

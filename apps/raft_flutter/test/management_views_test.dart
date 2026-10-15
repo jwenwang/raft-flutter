@@ -12,7 +12,6 @@ import 'package:raft_flutter/features/integrations_views.dart';
 import 'package:raft_flutter/features/provider_views.dart';
 import 'package:raft_flutter/features/billing_view.dart';
 import 'package:raft_flutter/features/labs_view.dart';
-import 'package:raft_flutter/features/mobile_settings_owner.dart';
 import 'package:raft_flutter/features/server_setup_gate.dart';
 import 'package:raft_flutter/features/account_connections_view.dart';
 import 'package:raft_flutter/features/agent_apps_view.dart';
@@ -398,9 +397,13 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Manage channel mappings'));
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.byKey(const ValueKey('slack-bridge-remove-pair-0')));
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('slack-bridge-remove-pair-0')),
+      );
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('slack-bridge-remove-pair-0')));
+      await tester.tap(
+        find.byKey(const ValueKey('slack-bridge-remove-pair-0')),
+      );
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('Apply mapping changes'));
       await tester.pumpAndSettle();
@@ -888,28 +891,35 @@ void main() {
     await tester.pumpWidget(host(LabsView(controller: w)));
     await tester.pumpAndSettle();
     expect(find.text('Labs settings unavailable'), findsOneWidget);
-    expect(find.byKey(const Key('mobile-settings-direct-switch')), findsNothing);
+    expect(
+      find.byKey(const Key('mobile-settings-direct-switch')),
+      findsNothing,
+    );
   });
-  testWidgets(
-    'a compact debug Labs page shows the phone settings switch',
-    (tester) async {
-      final (w, _) = (await tester.runAsync(() => _fixture('owner')))!;
-      addTearDown(w.dispose);
-      addTearDown(MobileSettingsPreference.instance.resetForTest);
-      tester.view.physicalSize = const Size(390, 900);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      await tester.pumpWidget(host(LabsView(controller: w)));
-      await tester.pumpAndSettle();
-      expect(find.byKey(const Key('mobile-settings-direct-switch')), findsOneWidget);
-      expect(find.text('Labs settings unavailable'), findsOneWidget);
-      tester.view.physicalSize = const Size(1280, 900);
-      await tester.pumpWidget(host(LabsView(controller: w)));
-      await tester.pumpAndSettle();
-      expect(find.byKey(const Key('mobile-settings-direct-switch')), findsNothing);
-    },
-  );
+  testWidgets('a compact debug Labs page has no phone settings switch', (
+    tester,
+  ) async {
+    final (w, _) = (await tester.runAsync(() => _fixture('owner')))!;
+    addTearDown(w.dispose);
+    tester.view.physicalSize = const Size(390, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(host(LabsView(controller: w)));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('mobile-settings-direct-switch')),
+      findsNothing,
+    );
+    expect(find.text('Labs settings unavailable'), findsOneWidget);
+    tester.view.physicalSize = const Size(1280, 900);
+    await tester.pumpWidget(host(LabsView(controller: w)));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('mobile-settings-direct-switch')),
+      findsNothing,
+    );
+  });
   testWidgets('admin can read Stripe billing but cannot purchase or cancel', (
     tester,
   ) async {

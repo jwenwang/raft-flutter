@@ -936,7 +936,9 @@ class _RaftChatViewState extends State<RaftChatView>
         viewport.positions.length != 1) {
       return;
     }
-    if (atBottom) {
+    // A short restored context can end inside the viewport while newer rows
+    // remain on disk. Only the conversation's latest end clears its anchor.
+    if (atBottom && !(widget.thread ? w.threadWindow?.hasNewer == true : w.hasNewer)) {
       w.messageWindows.clearReadingAnchor(id);
       MessageHistoryPositions.save(w, id, null);
     } else if (captureTimelineReadingAnchor(context) case final anchor?) {

@@ -77,6 +77,7 @@ class MessageHistoryPage extends MapBase<String, dynamic> {
     this.focused = false,
     this.target,
     this.verifiedAt,
+    this.heldBeforeAdmission = const {},
   }) : _page = Map.of(page);
   final Map<String, dynamic> _page;
   final Map<String, dynamic>? remotePage;
@@ -87,6 +88,8 @@ class MessageHistoryPage extends MapBase<String, dynamic> {
   final bool focused;
   final String? target;
   final DateTime? verifiedAt;
+  /// Receiver-owned rows that existed before this response was presented.
+  final Map<String, Map<String, dynamic>> heldBeforeAdmission;
   String get queryKey => historyQueryKey(
     before: before,
     after: after,

@@ -399,6 +399,9 @@ void main() {
         await cache.customStatement(
           "CREATE TEMP TRIGGER shadow_write_probe AFTER INSERT ON workspace_cache WHEN NEW.kind='window' AND NEW.id='chat' BEGIN UPDATE shadow_writes SET n=n+1; END",
         );
+        await cache.customStatement(
+          "CREATE TEMP TRIGGER shadow_update_probe AFTER UPDATE OF payload ON workspace_cache WHEN NEW.kind='window' AND NEW.id='chat' BEGIN UPDATE shadow_writes SET n=n+1; END",
+        );
         await cache.customStatement('CREATE TEMP TABLE body_writes(n INTEGER)');
         await cache.customStatement('INSERT INTO body_writes VALUES(0)');
         await cache.customStatement(

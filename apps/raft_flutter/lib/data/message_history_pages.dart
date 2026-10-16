@@ -26,6 +26,7 @@ class MessageHistoryPages {
     before: null, after: null, local: true, focused: true,
     target: local['targetMessageId'] as String?,
     verifiedAt: local is MessageHistoryPage ? local.verifiedAt : null,
+    heldBeforeAdmission: {for (final row in w.ledger.messages(scope.channel)) row['id'] as String: row},
   );
   static String saveError(Object cause) => cause is HistoryReadRetired
       ? 'Local history changed while loading. Try again.'
@@ -235,16 +236,23 @@ class MessageHistoryPages {
       if (request.current && w.cacheWritable) {
         if (cause is HistoryReadRetired) {
           // The receiver can have admitted this page before its write fence.
-          // Remove only the unchanged page projections; later live edits own
-          // their bodies and must survive this retired response.
+          // Restore held versions and drop newly presented, unchanged page
+          // projections. Later live edits retain their own authority.
+          final restore = <Map<String, dynamic>>[];
           for (final row in page['messages'] as List) {
             final key = row['id'] as String;
             if (identical(initial[key], w.ledger.message(id, key)) &&
                 !device.receiver.hasRow(page.scope, key)) {
-              w.ledger.remove(id, key);
-              w.visibleIds[id]?.remove(key);
+              final held = page.heldBeforeAdmission[key];
+              if (held != null) {
+                restore.add(held);
+              } else {
+                w.ledger.remove(id, key);
+                w.visibleIds[id]?.remove(key);
+              }
             }
           }
+          w.messageWindows.acceptRows(request, id, restore, authoritative: true);
         }
         w.error ??= saveError(cause);
       }
@@ -332,6 +340,7 @@ class MessageHistoryPages {
             verifiedAt: await verified(
               local is MessageHistoryPage ? local.verifiedAt : null,
             ),
+            heldBeforeAdmission: {for (final row in held()) row['id'] as String: row},
           );
         }
       }
@@ -361,6 +370,7 @@ class MessageHistoryPages {
             local: true,
             limit: limit,
             verifiedAt: await verified(local.verifiedAt),
+            heldBeforeAdmission: {for (final row in held()) row['id'] as String: row},
           );
         }
       }
@@ -418,6 +428,7 @@ class MessageHistoryPages {
       limit: limit,
       focused: focused,
       target: target,
+      heldBeforeAdmission: {for (final row in held()) row['id'] as String: row},
     );
   }
 

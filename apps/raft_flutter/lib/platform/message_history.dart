@@ -799,7 +799,7 @@ class SqliteMessageHistory implements MessageHistoryStorage {
           'tailSequence': '${highest > tail ? highest : tail}',
         });
       }
-      await HistoryShadows(db, readLegacy, writeLegacy).refresh(scope);
+      await HistoryShadows(db).refresh(scope);
       return true;
     });
   });
@@ -1247,7 +1247,7 @@ class SqliteMessageHistory implements MessageHistoryStorage {
         maximumPreviousRevision: limited ? null : page.revision,
         complete: true,
       );
-      await HistoryShadows(db, readLegacy, writeLegacy).refresh(scope);
+      await HistoryShadows(db).refresh(scope);
       if (lower <= upper) {
         await _range(
           scope,

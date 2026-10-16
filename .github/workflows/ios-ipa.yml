@@ -71,6 +71,29 @@ jobs:
         with:
           ruby-version: '3.3'
 
+      - name: Select an Xcode with the iOS 26 SDK
+        run: |
+          set -eu
+          # macos-15 ships Xcode 16.4 as the default plus Xcode 26.x. The pinned
+          # workmanager_apple 0.9.11 references BGContinuedProcessingTask /
+          # ...TaskRequest unconditionally, and those types only exist from the
+          # iOS 26 SDK on, so the runner default cannot archive this app.
+          # Upstream develops on Xcode 27 (docs/macos-evidence.md).
+          selected=""
+          for app in $(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V -r || true); do
+            version="$(plutil -extract CFBundleShortVersionString raw -o - "$app/Contents/Info.plist")"
+            if [ "${version%%.*}" -ge 26 ]; then
+              selected="$app"
+              echo "DEVELOPER_DIR=$app/Contents/Developer" >> "$GITHUB_ENV"
+              break
+            fi
+          done
+          if [ -z "$selected" ]; then
+            echo "::error::No Xcode 26 or newer on this runner; iOS background-task symbols will not compile."
+            exit 1
+          fi
+          echo "selected: $selected"
+
       - name: Check iOS packaging tools
         run: |
           gem install cocoapods --version 1.16.2 --no-document
@@ -79,6 +102,18 @@ jobs:
           pod --version
           test "$(pod --version)" = "1.16.2"
           command -v codesign
+          python3 - <<'PY'
+          import json
+          import subprocess
+
+          out = subprocess.run(['xcodebuild', '-showsdks', '-json'],
+                               capture_output=True, text=True, check=True).stdout
+          ios = [entry for entry in json.loads(out) if entry.get('platform') == 'ios']
+          print('iOS SDKs:', [(entry.get('canonicalName'), entry.get('version')) for entry in ios])
+          majors = [int(entry['version'].split('.')[0]) for entry in ios if entry.get('version')]
+          if not majors or max(majors) < 26:
+              raise SystemExit('The selected Xcode has no iOS 26 or newer SDK.')
+          PY
 
       - name: Resolve locked dependencies
         run: python tool/flutter pub get --enforce-lockfile

@@ -1,0 +1,294 @@
+name: Build iOS IPA
+
+# Standalone on purpose: tool/release.py:25 fixes PLATFORMS to
+# {windows, android, linux, macos, appimage} and :88 requires
+# tool/release-platforms.json to contain exactly that set, so "ios" cannot be
+# enabled without changing that gate. This job produces the same compile-time
+# defines a formal release build passes, and exports an IPA.
+#
+# export_method=unsigned needs no secrets and produces an IPA that is not
+# installable on a device; re-sign it yourself. The other methods sign with the
+# certificate and profiles you supply.
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: 'CFBundleVersion; blank uses GITHUB_RUN_NUMBER like the release job does'
+        type: string
+        default: ''
+      export_method:
+        description: 'ExportOptions method. development needs a development certificate, ad-hoc a distribution one'
+        type: choice
+        options: [unsigned, development, ad-hoc, app-store]
+        default: unsigned
+      team_id:
+        description: 'Apple team ID; required for every method except unsigned'
+        type: string
+        default: ''
+      origin:
+        description: 'RAFT_ORIGIN (API origin)'
+        type: string
+        default: 'https://api.raft.build'
+      frontend_origin:
+        description: 'RAFT_FRONTEND_ORIGIN (Web origin used for browser hand-off and content links)'
+        type: string
+        default: 'https://app.raft.build'
+      app_group:
+        description: 'Override RAFT_APP_GROUP; blank keeps the project value group.app.raft.raftFlutter'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: '1'
+
+jobs:
+  ipa:
+    name: iOS ARM64 IPA (${{ inputs.export_method }})
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version-file: .fvmrc
+          channel: stable
+          cache: true
+
+      - name: Select the pinned SDK wrapper
+        run: python tool/release.py sdk
+
+      - name: Install the locked CocoaPods version
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+
+      - name: Check iOS packaging tools
+        run: |
+          gem install cocoapods --version 1.16.2 --no-document
+          gem install json --version 2.18.0 --no-document
+          xcodebuild -version
+          pod --version
+          test "$(pod --version)" = "1.16.2"
+          command -v codesign
+
+      - name: Resolve locked dependencies
+        run: python tool/flutter pub get --enforce-lockfile
+
+      - name: Resolve the build identity
+        id: identity
+        env:
+          BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          text = Path('apps/raft_flutter/pubspec.yaml').read_text(encoding='utf-8')
+          version = re.search(r'^version:\s*([^+\s]+)\+\d+\s*$', text, re.M)[1]
+          number = os.environ['BUILD_NUMBER'].strip() or os.environ['GITHUB_RUN_NUMBER']
+          if not re.fullmatch(r'[1-9][0-9]*', number):
+              raise SystemExit(f'build_number must be a positive integer, got {number!r}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
+              stream.write(f'version={version}\nnumber={number}\n')
+          PY
+
+      - name: Prepare signing
+        if: inputs.export_method != 'unsigned'
+        env:
+          TEAM_ID: ${{ inputs.team_id }}
+          EXPORT_METHOD: ${{ inputs.export_method }}
+          CERT_P12_BASE64: ${{ secrets.IOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
+          PROFILE_APP_BASE64: ${{ secrets.IOS_PROFILE_APP_BASE64 }}
+          PROFILE_SHARE_BASE64: ${{ secrets.IOS_PROFILE_SHARE_BASE64 }}
+          PROFILE_ACTION_BASE64: ${{ secrets.IOS_PROFILE_ACTION_BASE64 }}
+        run: |
+          set -eu
+          missing=0
+          for name in TEAM_ID CERT_P12_BASE64 CERT_PASSWORD PROFILE_APP_BASE64 PROFILE_SHARE_BASE64 PROFILE_ACTION_BASE64; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is empty. Provide it as an Actions secret (TEAM_ID is a workflow input)."
+              missing=1
+            fi
+          done
+          [ "$missing" = 0 ] || exit 1
+
+          work="$RUNNER_TEMP/ios-signing"
+          mkdir -p "$work"
+          keychain="$work/ios-build.keychain"
+          keychain_password="$(uuidgen)"
+          decode() { python3 -c 'import base64,sys,pathlib; pathlib.Path(sys.argv[1]).write_bytes(base64.b64decode(sys.stdin.read()))' "$1"; }
+
+          security create-keychain -p "$keychain_password" "$keychain"
+          security default-keychain -s "$keychain"
+          # The System keychain must stay in the list or codesign cannot load Apple's roots.
+          security list-keychains -d user -s "$keychain" /Library/Keychains/System.keychain
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          # Without this the keychain locks mid-build and codesign blocks until the job times out.
+          security set-keychain-settings -t 3000 "$keychain"
+
+          decode "$work/certificate.p12" <<< "$CERT_P12_BASE64"
+          security import "$work/certificate.p12" -k "$keychain" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security -A
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+          identities="$(security find-identity -v -p codesigning "$keychain")"
+          echo "$identities"
+          if ! echo "$identities" | grep -qE '[1-9][0-9]* valid identities'; then
+            echo "::error::The imported certificate is not usable for codesigning (wrong .p12, or the keychain partition list failed)."
+            exit 1
+          fi
+
+          # The app and both extensions are separate App IDs, so each needs its own profile.
+          for entry in "app:$PROFILE_APP_BASE64" "share:$PROFILE_SHARE_BASE64" "action:$PROFILE_ACTION_BASE64"; do
+            label="${entry%%:*}"
+            file="$work/$label.mobileprovision"
+            decode "$file" <<< "${entry#*:}"
+            if ! security cms -D -i "$file" > "$work/$label.plist" 2>/dev/null; then
+              echo "::error::$label profile is not a valid provisioning profile."
+              exit 1
+            fi
+            echo "$label profile: $(plutil -extract Name raw -o - "$work/$label.plist")"
+            echo "$label expires: $(plutil -extract ExpirationDate raw -o - "$work/$label.plist")"
+          done
+
+          python - <<'PY'
+          import os
+          import plistlib
+          import subprocess
+          from pathlib import Path
+
+          work = Path(os.environ['RUNNER_TEMP']) / 'ios-signing'
+
+          def profile_uuid(name):
+              out = subprocess.run(['plutil', '-extract', 'UUID', 'raw', '-o', '-', str(work / f'{name}.plist')],
+                                   capture_output=True, text=True, check=True)
+              return out.stdout.strip()
+
+          def team_of(name):
+              out = subprocess.run(['plutil', '-extract', 'TeamIdentifier', 'raw', '-o', '-', str(work / f'{name}.plist')],
+                                   capture_output=True, text=True, check=True)
+              return out.stdout.strip()
+
+          bundle_ids = {
+              'app': 'app.raft.raftFlutter',
+              'share': 'app.raft.raftFlutter.ShareExtension',
+              'action': 'app.raft.raftFlutter.ActionExtension',
+          }
+          for name, bundle_id in bundle_ids.items():
+              identifier = subprocess.run(
+                  ['plutil', '-extract', 'Entitlements.application-identifier', 'raw', '-o', '-',
+                   str(work / f'{name}.plist')],
+                  capture_output=True, text=True, check=True).stdout.strip()
+              if not identifier.endswith(bundle_id):
+                  raise SystemExit(f'{name} profile is for {identifier}, but the project builds {bundle_id}. '
+                                   'Register that App ID under your team or change the bundle identifiers.')
+
+          options = {
+              'method': os.environ['EXPORT_METHOD'],
+              'teamID': os.environ['TEAM_ID'],
+              'signingStyle': 'manual',
+              'provisioningProfiles': {bundle_ids[name]: profile_uuid(name) for name in bundle_ids},
+              'compileBitcode': False,
+              'stripSwiftSymbols': True,
+              'uploadSymbols': False,
+          }
+          (work / 'ExportOptions.plist').write_bytes(plistlib.dumps(options))
+          print(subprocess.run(['plutil', '-p', str(work / 'ExportOptions.plist')],
+                               capture_output=True, text=True).stdout)
+          PY
+
+      - name: Build and export the IPA
+        env:
+          EXPORT_METHOD: ${{ inputs.export_method }}
+          VERSION: ${{ steps.identity.outputs.version }}
+          NUMBER: ${{ steps.identity.outputs.number }}
+          ORIGIN: ${{ inputs.origin }}
+          FRONTEND_ORIGIN: ${{ inputs.frontend_origin }}
+          RAFT_COMMIT_SHA: ${{ github.sha }}
+          APP_GROUP: ${{ inputs.app_group }}
+        working-directory: apps/raft_flutter
+        run: |
+          set -eu
+          # Flutter forwards every FLUTTER_XCODE_* variable to xcodebuild as a build setting
+          # (flutter 3.47.6, packages/flutter_tools/lib/src/ios/xcodeproj.dart:517). Command-line
+          # settings outrank the Xcode project, which is the only way to beat the target-level
+          # RAFT_APP_GROUP and CODE_SIGN_IDENTITY[sdk=iphoneos*] entries in Runner.xcodeproj —
+          # appending them to an xcconfig would lose, because project settings beat xcconfig files.
+          settings=()
+          if [ -n "$APP_GROUP" ]; then
+            settings+=("FLUTTER_XCODE_RAFT_APP_GROUP=$APP_GROUP")
+          fi
+          if [ "$EXPORT_METHOD" = ad-hoc ] || [ "$EXPORT_METHOD" = app-store ]; then
+            # The project pins "iPhone Developer", which cannot use a distribution certificate.
+            # Pass both forms: the conditional one is what the project actually sets.
+            settings+=("FLUTTER_XCODE_CODE_SIGN_IDENTITY=Apple Distribution")
+            settings+=('FLUTTER_XCODE_CODE_SIGN_IDENTITY[sdk=iphoneos*]=Apple Distribution')
+          fi
+
+          command=(../../tool/flutter build ipa --release --target=lib/main.dart
+                   "--build-name=$VERSION" "--build-number=$NUMBER"
+                   "--dart-define=RAFT_APP_VERSION=$VERSION+$NUMBER"
+                   "--dart-define=RAFT_BUILD_NUMBER=$NUMBER"
+                   "--dart-define=RAFT_ORIGIN=$ORIGIN"
+                   "--dart-define=RAFT_FRONTEND_ORIGIN=$FRONTEND_ORIGIN"
+                   "--dart-define=RAFT_DEPLOYMENT_ENV=production"
+                   "--dart-define=RAFT_COMMIT_SHA=$RAFT_COMMIT_SHA")
+          if [ "$EXPORT_METHOD" = unsigned ]; then
+            command+=(--no-codesign)
+          else
+            command+=("--export-options-plist=$RUNNER_TEMP/ios-signing/ExportOptions.plist")
+          fi
+
+          if [ "${#settings[@]}" -gt 0 ]; then
+            printf 'xcodebuild override: %s\n' "${settings[@]}"
+            env "${settings[@]}" "${command[@]}"
+          else
+            "${command[@]}"
+          fi
+
+      - name: Inspect the artifact
+        env:
+          EXPORT_METHOD: ${{ inputs.export_method }}
+        run: |
+          set -eu
+          ipa=$(ls apps/raft_flutter/build/ios/ipa/*.ipa | head -1)
+          echo "artifact: $ipa"
+          test -s "$ipa"
+          extract="$RUNNER_TEMP/inspect"
+          mkdir -p "$extract"
+          unzip -q "$ipa" -d "$extract"
+          app=$(find "$extract/Payload" -maxdepth 1 -name '*.app')
+          echo "bundle: $app"
+          if [ "$EXPORT_METHOD" = unsigned ]; then
+            echo "unsigned build: no device install until you re-sign it with your own certificate and profile"
+          else
+            codesign -dv --verbose=4 "$app" 2>&1 | grep -E 'Identifier|TeamIdentifier|Authority' || true
+            codesign --verify --deep --strict --verbose=2 "$app"
+          fi
+          found=0
+          for embedded in $(find "$extract/Payload" -name 'embedded.mobileprovision'); do
+            found=1
+            printf '%s: %s (expires %s)\n' "$(basename "$(dirname "$embedded")")" \
+              "$(plutil -extract Name raw -o - - < <(security cms -D -i "$embedded"))" \
+              "$(plutil -extract ExpirationDate raw -o - - < <(security cms -D -i "$embedded"))"
+          done
+          if [ "$found" = 0 ]; then
+            echo "no embedded provisioning profile in the payload"
+          fi
+
+      - name: Upload the IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: raft-flutter-${{ steps.identity.outputs.version }}+${{ steps.identity.outputs.number }}-ios-arm64${{ inputs.export_method == 'unsigned' && '-unsigned' || '' }}
+          path: apps/raft_flutter/build/ios/ipa/*.ipa
+          if-no-files-found: error

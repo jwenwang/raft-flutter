@@ -33,6 +33,10 @@ class MessageHistoryMemory {
           w.threadChannelId,
           w.foreground,
           w.loadingOlder,
+          w.channelLoading,
+          w.threadLoading,
+          w.messageWindows.accepted[w.channel?.id],
+          w.messageWindows.accepted[w.threadChannelId],
           w.cacheWritable,
           w.highlightedMessageId,
         ),
@@ -104,7 +108,7 @@ class MessageHistoryMemory {
       if (versions.isEmpty) continue;
       final active = w.foreground && (id == main || id == thread);
       final anchor = w.messageWindows.readingAnchor(id);
-      final anchorId = anchor == null
+      var anchorId = anchor == null
           ? null
           : versions.entries
                 .where(
@@ -116,6 +120,16 @@ class MessageHistoryMemory {
                 )
                 .firstOrNull
                 ?.key;
+      final membership = w.messageWindows.accepted[id];
+      final displayed = w.messageWindows.rows(id);
+      // Restored contexts may coexist with a cached tail before a view reports
+      // geometry. An absent/stale view anchor cannot select that hidden tail.
+      if (active &&
+          displayed.isNotEmpty &&
+          displayed.length <= storage.memory.activeLimit &&
+          !displayed.any((row) => row.id == anchorId)) {
+        anchorId = displayed[displayed.length ~/ 2].id;
+      }
       final highlighted = w.highlightedMessageId;
       final protected = <String>{
         ?highlighted,
@@ -128,6 +142,7 @@ class MessageHistoryMemory {
           current() &&
           w.messageWindows.notRevoked(id) &&
           identical(anchor, w.messageWindows.readingAnchor(id)) &&
+          identical(membership, w.messageWindows.accepted[id]) &&
           ticket == w.messageHistoryTicket(scope!.parentChannel);
       result.add(
         HistoryMemoryWindow(

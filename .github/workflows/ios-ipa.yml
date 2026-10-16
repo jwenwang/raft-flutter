@@ -289,6 +289,31 @@ jobs:
             "${command[@]}"
           fi
 
+      - name: Package the unsigned IPA
+        # `flutter build ipa --no-codesign` stops at the .xcarchive and prints
+        # "Codesigning disabled with --no-codesign, skipping IPA." (flutter 3.47.6,
+        # packages/flutter_tools/lib/src/commands/build_ios.dart:513). An IPA is only a
+        # zip that holds Payload/, so assemble it from the archive Flutter did produce.
+        if: inputs.export_method == 'unsigned'
+        env:
+          VERSION: ${{ steps.identity.outputs.version }}
+          NUMBER: ${{ steps.identity.outputs.number }}
+        run: |
+          set -eu
+          archive=$(find apps/raft_flutter/build/ios -maxdepth 3 -type d -name '*.xcarchive' | head -1)
+          test -n "$archive"
+          app=$(find "$archive/Products/Applications" -maxdepth 1 -type d -name '*.app' | head -1)
+          test -n "$app"
+          echo "archive: $archive"
+          root="$RUNNER_TEMP/unsigned"
+          rm -rf "$root"
+          mkdir -p "$root/Payload"
+          cp -R "$app" "$root/Payload/"
+          ipa="$GITHUB_WORKSPACE/apps/raft_flutter/build/ios/ipa/raft-flutter-$VERSION-$NUMBER-ios-arm64-unsigned.ipa"
+          mkdir -p "$(dirname "$ipa")"
+          (cd "$root" && zip -qry "$ipa" Payload)
+          ls -lh "$ipa"
+
       - name: Inspect the artifact
         env:
           EXPORT_METHOD: ${{ inputs.export_method }}

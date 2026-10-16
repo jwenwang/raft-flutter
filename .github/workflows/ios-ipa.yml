@@ -96,24 +96,22 @@ jobs:
 
       - name: Check iOS packaging tools
         run: |
+          set -eu
           gem install cocoapods --version 1.16.2 --no-document
           gem install json --version 2.18.0 --no-document
           xcodebuild -version
           pod --version
           test "$(pod --version)" = "1.16.2"
           command -v codesign
-          python3 - <<'PY'
-          import json
-          import subprocess
-
-          out = subprocess.run(['xcodebuild', '-showsdks', '-json'],
-                               capture_output=True, text=True, check=True).stdout
-          ios = [entry for entry in json.loads(out) if entry.get('platform') == 'ios']
-          print('iOS SDKs:', [(entry.get('canonicalName'), entry.get('version')) for entry in ios])
-          majors = [int(entry['version'].split('.')[0]) for entry in ios if entry.get('version')]
-          if not majors or max(majors) < 26:
-              raise SystemExit('The selected Xcode has no iOS 26 or newer SDK.')
-          PY
+          # xcrun resolves through DEVELOPER_DIR, so this is the SDK the archive
+          # will actually compile against rather than the machine default.
+          sdk_path="$(xcrun --sdk iphoneos --show-sdk-path)"
+          sdk_version="$(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "iphoneos SDK $sdk_version at $sdk_path"
+          if [ "${sdk_version%%.*}" -lt 26 ]; then
+            echo "::error::iphoneos SDK is $sdk_version; workmanager_apple needs iOS 26 or newer."
+            exit 1
+          fi
 
       - name: Resolve locked dependencies
         run: python tool/flutter pub get --enforce-lockfile
